@@ -1,4 +1,5 @@
 import type { GraphNode } from '@spider/shared';
+import type { DiagnosticType } from './api';
 
 /** Thin-space thousands separators (DESIGN_RULES §10): 12 408. */
 export function fmtNum(n: number | undefined | null): string {
@@ -43,3 +44,13 @@ export function locationOf(n: GraphNode): string | undefined {
   if (n.span) return `${n.span.file}:${n.span.startLine}`;
   return n.file;
 }
+
+/** Diagnostic group names and display order (Explorer Issues tab and the Issues view). */
+export const DIAG_LABEL: Record<DiagnosticType, string> = {
+  cycle: 'Import cycles',
+  'layer-violation': 'Layer violations',
+  'god-module': 'Large hubs',
+  'dead-code': 'Unreferenced exports',
+  orphan: 'Orphan files',
+};
+export const DIAG_ORDER: DiagnosticType[] = ['cycle', 'layer-violation', 'god-module', 'dead-code', 'orphan'];

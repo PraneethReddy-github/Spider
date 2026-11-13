@@ -4,9 +4,9 @@ import { Copy, SquareArrowOutUpRight } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { actions } from '../actions';
 import { api } from '../api';
-import { fmtNum, locationOf, nodeLabel } from '../format';
+import { fmtNum, fmtRelative, locationOf, nodeLabel } from '../format';
 import { type Token, grammarFor, tokenize } from '../highlight';
-import { useEditorUrl, useNodeDetail, useReveal } from '../hooks';
+import { useEditorUrl, useNodeDetail, useOverrides, useReveal, useSaveOverrides } from '../hooks';
 import { useStore } from '../store';
 import { EmptyState, IconButton, KindBadge, KindGlyph, Spinner, Tabs } from '../ui';
 
@@ -86,7 +86,7 @@ export function Details({ repoId }: { repoId: string }) {
       )}
       <div className="side-scroll" style={{ padding: 0 }}>
         {tab === 'overview' || !hasSource ? (
-          <Overview d={d} />
+          <Overview repoId={repoId} d={d} />
         ) : (
           <Source repoId={repoId} id={n.id} outgoing={d.outgoing} />
         )}
@@ -95,7 +95,7 @@ export function Details({ repoId }: { repoId: string }) {
   );
 }
 
-function Overview({ d }: { d: NodeDetail }) {
+function Overview({ repoId, d }: { repoId: string; d: NodeDetail }) {
   const n = d.node;
   const reveal = useReveal();
   const expanded = useStore((s) => s.expanded);
@@ -103,11 +103,22 @@ function Overview({ d }: { d: NodeDetail }) {
   return (
     <>
       <section className="details-section">
-        <div className="metrics">
+        <div
+          className="metrics"
+          style={
+            n.metrics?.churn !== undefined || n.metrics?.betweenness !== undefined
+              ? { gridTemplateColumns: 'repeat(3, 1fr)' }
+              : undefined
+          }
+        >
           <Metric label="Fan-in" value={n.metrics?.fanIn} />
           <Metric label="Fan-out" value={n.metrics?.fanOut} />
           <Metric label="Lines" value={n.metrics?.loc} />
           <Metric label="Complexity" value={n.metrics?.complexity} />
+          {n.metrics?.churn !== undefined && <Metric label="Churn" value={n.metrics.churn} />}
+          {n.metrics?.betweenness !== undefined && (
+            <Metric label="Betweenness" text={n.metrics.betweenness.toFixed(3)} />
+          )}
         </div>
       </section>
       <section className="details-section">
@@ -149,6 +160,8 @@ function Overview({ d }: { d: NodeDetail }) {
           </dl>
         </section>
       )}
+      {n.kind === 'file' && <SubsystemPin repoId={repoId} node={n} />}
+      {n.kind === 'file' && <History repoId={repoId} id={n.id} />}
       <EdgeGroups title="Incoming" items={d.incoming} onPick={(id) => void reveal(id, { view: keepView() })} />
       <EdgeGroups title="Outgoing" items={d.outgoing} onPick={(id) => void reveal(id, { view: keepView() })} />
       {d.children.length > 0 && (
@@ -163,12 +176,112 @@ function Overview({ d }: { d: NodeDetail }) {
 
 const keepView = () => useStore.getState().view;
 
-function Metric({ label, value }: { label: string; value?: number }) {
+function Metric({ label, value, text }: { label: string; value?: number; text?: string }) {
   return (
     <div className="metric">
       <div className="t-caption tone-3">{label}</div>
-      <div className="value">{value === undefined ? '–' : fmtNum(value)}</div>
+      <div className="value">{text ?? (value === undefined ? '–' : fmtNum(value))}</div>
     </div>
+  );
+}
+
+/** Pin a file to a subsystem (subsystem override); the server recomputes subsystems. */
+function SubsystemPin({ repoId, node }: { repoId: string; node: GraphNode }) {
+  const subs = useQuery({ queryKey: ['subsystems', repoId], queryFn: () => api.subsystems(repoId) });
+  const overrides = useOverrides(repoId);
+  const save = useSaveOverrides(repoId);
+  if (!subs.data?.length) return null;
+  // pins are keyed by repo-relative file path
+  const key = node.file ?? node.id;
+  const pinned = overrides.data?.pins[key];
+  const current = pinned ?? (node.props.subsystem as string | undefined) ?? '';
+  return (
+    <section className="details-section">
+      <label className="select-row" style={{ marginTop: 0 }}>
+        <span className="t-caption">Subsystem</span>
+        <select
+          className="select"
+          style={{ maxWidth: 200 }}
+          value={current}
+          disabled={save.isPending || overrides.isError}
+          title={overrides.isError ? 'Subsystem overrides are unavailable on this server.' : undefined}
+          onChange={(e) => {
+            const to = e.target.value;
+            save.mutate((o) => {
+              const pins = { ...o.pins };
+              if (to) pins[key] = to;
+              else delete pins[key];
+              return { ...o, pins };
+            });
+          }}
+        >
+          {!current && <option value="">None</option>}
+          {[...subs.data]
+            .sort((a, b) => a.node.name.localeCompare(b.node.name))
+            .map((s) => (
+              <option key={s.node.id} value={s.node.id}>
+                {s.node.name}
+              </option>
+            ))}
+        </select>
+      </label>
+      {pinned && (
+        <div className="tone-3" style={{ marginTop: 4 }}>
+          Pinned.{' '}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() =>
+              save.mutate((o) => {
+                const pins = { ...o.pins };
+                delete pins[key];
+                return { ...o, pins };
+              })
+            }
+          >
+            Unpin
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Git history of a file: commits, top authors, last change. Hidden when the server has none. */
+function History({ repoId, id }: { repoId: string; id: string }) {
+  const q = useQuery({
+    queryKey: ['history', repoId, id],
+    queryFn: () => api.history(repoId, id),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+  return (
+    <section className="details-section">
+      <span className="t-caption">History</span>
+      {q.isLoading && <Spinner label="Loading history" />}
+      {q.isError && <p className="tone-3">No git history available.</p>}
+      {q.data && q.data.commits === 0 && <p className="tone-3">No commits touch this file.</p>}
+      {q.data && q.data.commits > 0 && (
+        <>
+          <div className="metrics" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+            <Metric label="Commits" value={q.data.commits} />
+            <Metric label="Last change" text={q.data.lastModified ? fmtRelative(q.data.lastModified) : '–'} />
+          </div>
+          {q.data.authors.length > 0 && (
+            <dl className="props" style={{ marginTop: 12 }}>
+              {q.data.authors.slice(0, 5).map((a) => (
+                <div key={a.name} style={{ display: 'contents' }}>
+                  <dt className="ellipsis">{a.name}</dt>
+                  <dd className="num">
+                    {fmtNum(a.commits)} {a.commits === 1 ? 'commit' : 'commits'}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

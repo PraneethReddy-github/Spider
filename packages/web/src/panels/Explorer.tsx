@@ -1,12 +1,12 @@
-import type { Diagnostic, RepoInfo } from '@spider/shared';
+import type { RepoInfo } from '@spider/shared';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { Check, ChevronRight, Pencil } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { type TreeNode, api } from '../api';
-import { fmtNum, nodeLabel } from '../format';
-import { useDiagnostics, useReveal } from '../hooks';
+import { DIAG_LABEL, DIAG_ORDER, fmtNum, nodeLabel } from '../format';
+import { useDiagnostics, useOverrides, useReveal, useSaveOverrides } from '../hooks';
 import { useStore } from '../store';
-import { EmptyState, KindGlyph, Spinner, Tabs } from '../ui';
+import { EmptyState, IconButton, KindGlyph, Spinner, Tabs } from '../ui';
 import { FiltersSection, LegendSection } from './Filters';
 
 type Tab = 'tree' | 'subsystems' | 'endpoints' | 'diagnostics';
@@ -108,36 +108,148 @@ function TreeItem({ repoId, node, depth }: { repoId: string; node: TreeNode; dep
 
 function Subsystems({ repoId }: { repoId: string }) {
   const q = useQuery({ queryKey: ['subsystems', repoId], queryFn: () => api.subsystems(repoId) });
+  const overrides = useOverrides(repoId).data;
+  const save = useSaveOverrides(repoId);
   const selected = useStore((s) => s.selected);
+  const [editing, setEditing] = useState<string>();
+  const [picked, setPicked] = useState<string[]>([]);
   if (q.isLoading) return <Spinner />;
   if (q.isError) return <EmptyState title="Could not load subsystems" body={(q.error as Error).message} />;
   if (!q.data?.length)
     return <EmptyState title="No subsystems" body="This repository is too small to split into subsystems." />;
+
+  const rename = (id: string, original: string, name: string) => {
+    setEditing(undefined);
+    const next = name.trim();
+    if (next === original) return;
+    save.mutate((o) => {
+      const r = { ...o.rename };
+      if (next) r[id] = next;
+      else delete r[id];
+      return { ...o, rename: r };
+    });
+  };
+  const merge = () => {
+    const ids = picked;
+    setPicked([]);
+    save.mutate((o) => ({ ...o, merge: [...o.merge, ids] }));
+  };
+  const hasOverrides =
+    overrides &&
+    (Object.keys(overrides.rename).length > 0 || overrides.merge.length > 0 || Object.keys(overrides.pins).length > 0);
+
   return (
-    <ul>
-      {[...q.data]
-        .sort((a, b) => b.members - a.members)
-        .map((s) => (
-          <li key={s.node.id}>
-            <button
-              type="button"
-              className="row"
-              aria-selected={selected === s.node.id}
-              onClick={() => {
-                const st = useStore.getState();
-                if (st.level !== 'L0') st.setLevel('L0');
-                if (st.view !== 'map') st.setView('map');
-                st.select(s.node.id);
-                st.setCenterOn(s.node.id);
-              }}
-            >
-              <KindGlyph kind="subsystem" />
-              <span className="name">{s.node.name}</span>
-              <span className="meta">{fmtNum(s.members)}</span>
+    <>
+      <ul>
+        {[...q.data]
+          .sort((a, b) => b.members - a.members)
+          .map((s) =>
+            editing === s.node.id ? (
+              <li key={s.node.id}>
+                <RenameInput
+                  initial={s.node.name}
+                  onDone={(name) => rename(s.node.id, s.node.name, name ?? s.node.name)}
+                />
+              </li>
+            ) : (
+              <li key={s.node.id} className="row-with-action">
+                <button
+                  type="button"
+                  className="row"
+                  aria-selected={selected === s.node.id}
+                  data-active={picked.includes(s.node.id)}
+                  title="Double-click to rename · Shift-click to select for merging"
+                  onClick={(e) => {
+                    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                      setPicked(
+                        picked.includes(s.node.id) ? picked.filter((x) => x !== s.node.id) : [...picked, s.node.id],
+                      );
+                      return;
+                    }
+                    const st = useStore.getState();
+                    if (st.level !== 'L0') st.setLevel('L0');
+                    if (st.view !== 'map') st.setView('map');
+                    st.select(s.node.id);
+                    st.setCenterOn(s.node.id);
+                  }}
+                  onDoubleClick={() => setEditing(s.node.id)}
+                >
+                  {picked.includes(s.node.id) ? (
+                    <Check size={14} strokeWidth={1.5} className="glyph" style={{ color: 'var(--accent-text)' }} />
+                  ) : (
+                    <KindGlyph kind="subsystem" />
+                  )}
+                  <span className="name">{s.node.name}</span>
+                  <span className="meta">{fmtNum(s.members)}</span>
+                </button>
+                <span className="row-action">
+                  <IconButton label="Rename subsystem" onClick={() => setEditing(s.node.id)}>
+                    <Pencil size={14} strokeWidth={1.5} />
+                  </IconButton>
+                </span>
+              </li>
+            ),
+          )}
+      </ul>
+      <div className="subsystem-foot">
+        {picked.length >= 2 ? (
+          <>
+            <button type="button" className="btn btn-secondary" disabled={save.isPending} onClick={merge}>
+              Merge {picked.length} subsystems
             </button>
-          </li>
-        ))}
-    </ul>
+            <button type="button" className="btn btn-ghost" onClick={() => setPicked([])}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <span className="tone-3">
+            {picked.length === 1
+              ? 'Shift-click another subsystem to merge.'
+              : 'Double-click to rename. Shift-click to merge.'}
+          </span>
+        )}
+        {hasOverrides && picked.length < 2 && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ marginLeft: 'auto' }}
+            disabled={save.isPending}
+            onClick={() => save.mutate(() => ({ rename: {}, merge: [], pins: {} }))}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Inline rename field: Enter or blur saves, Esc cancels (undefined). */
+function RenameInput({ initial, onDone }: { initial: string; onDone: (name: string | undefined) => void }) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (v: string | undefined) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(v);
+  };
+  return (
+    <label className="input" style={{ margin: '0 0 0 0' }}>
+      <span className="sr-only">Subsystem name</span>
+      <input
+        // biome-ignore lint/a11y/noAutofocus: the field appears because the user asked to rename
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={() => finish(value)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') finish(value);
+          if (e.key === 'Escape') finish(undefined);
+        }}
+      />
+    </label>
   );
 }
 
@@ -195,14 +307,6 @@ function Endpoints({ repoId }: { repoId: string }) {
 }
 
 /* ---------- diagnostics ---------- */
-
-const DIAG_LABEL: Record<Diagnostic['type'], string> = {
-  cycle: 'Import cycles',
-  'god-module': 'Large hubs',
-  'dead-code': 'Unreferenced exports',
-  orphan: 'Orphan files',
-};
-const DIAG_ORDER: Diagnostic['type'][] = ['cycle', 'god-module', 'dead-code', 'orphan'];
 
 function Diagnostics({ repoId }: { repoId: string }) {
   const q = useDiagnostics(repoId);

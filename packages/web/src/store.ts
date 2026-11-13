@@ -2,7 +2,11 @@ import type { EdgeKind, NodeKind, ViewLevel } from '@spider/shared';
 import { create } from 'zustand';
 import { DEFAULT_EDGE_KINDS, type ThemeName } from './theme';
 
-export type ViewMode = 'map' | 'focus' | 'flow';
+export type ViewMode = 'map' | 'focus' | 'flow' | 'matrix' | 'endpoints' | 'externals' | 'issues';
+export const VIEW_MODES: ViewMode[] = ['map', 'focus', 'flow', 'matrix', 'endpoints', 'externals', 'issues'];
+
+/** Node size metric on the canvas ('default' = the per-kind rule in theme.nodeSize). */
+export type SizeBy = 'default' | 'pagerank' | 'churn' | 'betweenness' | 'loc';
 
 export type FlowQuery =
   | { type: 'upstream'; id: string; depth: number }
@@ -20,6 +24,7 @@ export interface Filters {
   minConfidence: number;
   hideAmbiguous: boolean;
   colorBySubsystem: boolean;
+  sizeBy: SizeBy;
 }
 
 export interface ContextMenuState {
@@ -103,6 +108,7 @@ export const defaultFilters: Filters = {
   minConfidence: 0,
   hideAmbiguous: false,
   colorBySubsystem: false,
+  sizeBy: 'default',
 };
 
 const uniq = (xs: string[]) => Array.from(new Set(xs));

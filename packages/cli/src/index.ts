@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { QueryService, analyze, listRepos, loadRepo, repoIdFor, toDot, toGraphML } from '@spider/core';
+import { QueryService, analyze, listRepos, loadRepo, markdownReport, repoIdFor, toDot, toGraphML } from '@spider/core';
 import type { ProgressEvent } from '@spider/core';
 import { startServer } from '@spider/server';
 import { Command } from 'commander';
@@ -188,6 +188,20 @@ program
     console.log(
       `${pc.green('✔')} Wrote ${count(sg.nodes.length, 'node')} and ${count(sg.edges.length, 'edge')} to ${opts.out}`,
     );
+  });
+
+program
+  .command('report')
+  .argument('<repo>', 'repo id, name or source path')
+  .option('-o, --out <file>', 'write to a file instead of stdout')
+  .description('Write a Markdown architecture report')
+  .action(async (repo: string, opts: { out?: string }) => {
+    const info = await resolveRepo(repo);
+    const { graph, meta } = await loadRepo(info.repoId, home());
+    const md = markdownReport(new QueryService(graph, meta), info);
+    if (!opts.out) return void process.stdout.write(md);
+    await fs.writeFile(opts.out, md);
+    console.log(`${pc.green('✔')} Wrote the architecture report of ${info.name} to ${opts.out}`);
   });
 
 program

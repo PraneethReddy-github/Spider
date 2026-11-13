@@ -67,6 +67,7 @@ export function MapView({ repoId }: { repoId: string }) {
       hidden: new Set(s.hidden),
       hideAmbiguous: s.filters.hideAmbiguous,
       colorBySubsystem: s.filters.colorBySubsystem,
+      sizeBy: s.filters.sizeBy,
       marks,
     });
     mapVisible.ids = new Set(enc.nodes.map((n) => n.id));

@@ -88,6 +88,12 @@ export class SqliteStore {
     })();
   }
 
+  /** One meta value without loading the graph. */
+  loadMeta(key: string): unknown {
+    const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? JSON.parse(row.value) : undefined;
+  }
+
   loadGraph(): { graph: GraphBuilder; meta: Record<string, unknown> } {
     const g = new GraphBuilder();
     const nodeRows = this.db.prepare('SELECT * FROM nodes').all() as Array<Record<string, unknown>>;

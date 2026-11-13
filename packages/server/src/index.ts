@@ -32,6 +32,7 @@ import {
   treeQuerySchema,
 } from '@spider/shared';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { registerArchitectureRoutes } from './architecture.js';
 import { type RepoWatcher, createRepoWatcher } from './watch.js';
 
 export interface ServerOptions {
@@ -314,6 +315,17 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       if (p.format === 'graphml') return reply.type('application/graphml+xml').send(toGraphML(sg));
       return { info, ...sg };
     });
+  });
+
+  registerArchitectureRoutes(app, {
+    home,
+    withService,
+    invalidate: async (repoId) => {
+      services.delete(repoId);
+      const { info } = await getService(repoId, home);
+      const event: RepoEvent = { type: 'updated', repoId, analysedAt: info.analysedAt };
+      for (const listener of repoListeners.get(repoId) ?? []) listener(event);
+    },
   });
 
   /* ---------- static web app ---------- */

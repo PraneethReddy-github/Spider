@@ -12,6 +12,7 @@ import type {
   TraceResult,
 } from '@spider/shared';
 import type { GraphBuilder } from '../graph/builder.js';
+import { type MatrixRequest, externals, matrix } from './architecture.js';
 
 const STRUCTURAL: Set<EdgeKind> = new Set(['contains', 'member_of', 'exports']);
 const DEFAULT_EDGE_KINDS: EdgeKind[] = [
@@ -108,7 +109,7 @@ export class QueryService {
     if (!root)
       return { nodes: [], edges: [], meta: { level: req.level, total: 0, truncated: false, stats: statsOf([], []) } };
     if (req.level === 'L0') {
-      const subs = g.nodesOfKind('subsystem');
+      const subs = g.nodesOfKind('subsystem').filter(acceptNode);
       if (subs.length === 0) {
         for (const k of g.children('repo').filter(acceptNode)) walk(k, 'repo');
       } else {
@@ -492,6 +493,16 @@ export class QueryService {
   diagnostics(type?: string): Diagnostic[] {
     const all = (this.meta.diagnostics as Diagnostic[] | undefined) ?? [];
     return type ? all.filter((d) => d.type === type) : all;
+  }
+
+  /** Dependency structure matrix (`GET /repos/:id/matrix`). */
+  matrix(req: MatrixRequest) {
+    return matrix(this, req);
+  }
+
+  /** External dependencies and the files using them (`GET /repos/:id/externals`). */
+  externals() {
+    return externals(this);
   }
 
   subsystems(): { node: GraphNode; members: number }[] {

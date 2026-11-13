@@ -1,7 +1,7 @@
 import type { EdgeKind, NodeKind } from '@spider/shared';
 import { ChevronRight } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { useStore } from '../store';
+import { type SizeBy, useStore } from '../store';
 import {
   FILTER_EDGE_KINDS,
   FILTER_NODE_KINDS,
@@ -44,6 +44,14 @@ function Check({ label, checked, onChange }: { label: string; checked: boolean; 
     </label>
   );
 }
+
+const SIZE_BY: { value: SizeBy; label: string }[] = [
+  { value: 'default', label: 'Default' },
+  { value: 'pagerank', label: 'PageRank' },
+  { value: 'churn', label: 'Churn' },
+  { value: 'betweenness', label: 'Betweenness' },
+  { value: 'loc', label: 'Lines of code' },
+];
 
 const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...list, v] : list.filter((x) => x !== v));
 
@@ -122,6 +130,16 @@ export function FiltersSection({ languages }: { languages: string[] }) {
           checked={f.colorBySubsystem}
           onChange={(v) => set({ colorBySubsystem: v })}
         />
+        <label className="tone-2 select-row">
+          <span>Size by</span>
+          <select className="select" value={f.sizeBy} onChange={(e) => set({ sizeBy: e.target.value as SizeBy })}>
+            {SIZE_BY.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="tone-2" style={{ display: 'grid', gap: 4, marginTop: 4 }}>
           <span>
             Minimum confidence <span className="num tone-3">{f.minConfidence.toFixed(1)}</span>

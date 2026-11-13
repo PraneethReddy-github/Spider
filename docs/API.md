@@ -22,6 +22,15 @@ Limits: `level` ∈ `L0..L3`; `depth` 1–6; `focusDepth` 0–6; `limit` 1–100
 | `GET /repos/:id` | — | `RepoInfo` |
 | `DELETE /repos/:id` | — | `{ ok: true }` |
 | `POST /repos/:id/reanalyze` | — | `{ jobId }` |
+| `GET /remote/refs` | `source=<owner/repo\|git URL>` (required) | `RemoteRefs` `{ defaultBranch?, branches: string[], tags: string[] }` via `git ls-remote --symref` (15 s timeout; tags newest first by numeric sort). Local paths → 400; unreachable/unknown remote → 502 `{ error }` |
+
+**Remote sources.** `POST /repos` accepts `owner/repo` (GitHub) or a git URL plus an optional `ref`
+(branch or tag). Clones are shallow, under `SPIDER_HOME/clones/<hash>`; re-analysis fetches `ref` (or the
+default branch) into the existing clone. Private GitHub repos: set `GITHUB_TOKEN` in the server's (or
+CLI's) environment; it is injected into `https://github.com/…` URLs only for the git command, never
+stored in the clone's remote, and redacted (`***`) from errors and logs. Git never prompts for
+credentials (`GIT_TERMINAL_PROMPT=0`). Clone/fetch progress (`git --progress`) is streamed as `[ingest]`
+lines into `JobProgress.log` and `message`, one per stage and 10 % step (e.g. `receiving objects 40% (410/1024)`).
 
 ## Graph queries
 
@@ -37,9 +46,15 @@ Limits: `level` ∈ `L0..L3`; `depth` 1–6; `focusDepth` 0–6; `limit` 1–100
 | `GET /repos/:id/path` | `from=`, `to=`, `kinds=` | `SubGraph` with nodes/edges ordered along the path; empty + `meta.found=false` if none |
 | `GET /repos/:id/endpoints` | `includeTests=true` | `EndpointSummary[]` `{ node, handler?, traceDepth }` sorted by path |
 | `GET /repos/:id/trace/:endpointId` | `depth=6` | `SubGraph & { distances }` following `exposes → calls/instantiates` |
-| `GET /repos/:id/diagnostics` | `type=cycle|dead-code|god-module|orphan` | `Diagnostic[]` |
+| `GET /repos/:id/diagnostics` | `type=cycle|dead-code|god-module|orphan|layer-violation` | `Diagnostic[]` |
 | `GET /repos/:id/subsystems` | — | `{ node, members }[]` |
 | `GET /repos/:id/tree` | `node=repo`, `depth=1` | `(GraphNode & { childCount })[]` sorted dirs → files → symbols |
+| `GET /repos/:id/nodes/:nodeId/history` | — | `NodeHistory` `{ commits, authors: { name, commits }[], lastModified? }` — whole git history of the node's file (directories: their path); author names only, never emails; nodes without a file and non-git repos → `{ commits: 0, authors: [] }`; unknown node → 404 |
+| `GET /repos/:id/overrides` | — | `SubsystemOverrides` `{ rename: Record<subsystemId, label>, merge: subsystemId[][], pins: Record<filePath, subsystemId> }` (empty defaults) |
+| `PUT /repos/:id/overrides` | body `SubsystemOverrides` (missing fields default to empty; unknown keys → 400; each merge group needs ≥ 2 ids) | `{ ok: true }`. Saved to `SPIDER_HOME/repos/<id>/overrides.json` and applied to the stored graph at once (no re-parse): merge groups fold into their first id, pins move files, rename relabels. Unknown ids/paths are ignored. Overrides survive re-analysis; `WS /repos/:id/events` sends `updated`. Unknown repo → 404 |
+| `GET /repos/:id/matrix` | `level=L1|L2` (default L1), `expanded=id,id`, `includeTests=true` | `MatrixResult` `{ nodes, cells: { i, j, weight, kinds }[], layers }` — dependency structure matrix over the same roll-up as `/graph` (expanded groups, externals, packages and non-source files left out). Row `i` = source, column `j` = target, `kinds` = weight per edge kind. Nodes are ordered by inferred layer (`layers[k]`; 0 = depends on nothing in the matrix, cycles share a layer) then name, so dependencies sit below the diagonal and cells with `j > i` are upward or cyclic |
+| `GET /repos/:id/externals` | — | `ExternalUsage[]` `{ node, total, users: { node, weight }[] }` — externals with the non-test files that import/call/extend/reference them, by `total` desc |
+| `GET /repos/:id/report` | `format=md` (default) | `text/markdown` "Architecture of <name>": overview, languages/frameworks, subsystems (key files, dependencies), layering of subsystems, endpoints table, hubs by PageRank and betweenness, diagnostics summary. Same as `spider report <repo> [-o file]` |
 | `GET /repos/:id/export` | `format=json|dot|graphml` | full graph JSON `{ info, nodes, edges }`, Graphviz text (`text/vnd.graphviz`) or GraphML (`application/graphml+xml`) |
 
 Edge kinds: `contains, imports, exports, calls, instantiates, extends, implements, references,
@@ -50,7 +65,22 @@ exposes, depends_on, reads, writes, configures, member_of, dep_aggregate`. Struc
 `endpointsInTests`); `unresolvedCalls` counts calls whose head is a local or imported name that failed
 to bind; `externalCalls` counts calls into libraries (head is an external import or an instance of one).
 
-Planned (see `IMPLEMENTATION_PLAN.md`): `GET /repos/:id/matrix` (C-16), `PATCH /repos/:id/subsystems/:sid` (C-11), `POST /repos/:id/ask` (Phase 5).
+**Metrics** on nodes (`GraphNode.metrics`): `fanIn`, `fanOut`, `pagerank` (files), `betweenness` (non-test
+files: sampled Brandes over ≤ 256 fixed pivots on the file dependency graph, normalised to 0..1), `churn`
+(files: commits touching the file in the last 6 months; 0 outside git or in shallow clones beyond depth).
+
+**Subsystems** are inferred on production files: workspace packages and `examples`/`docs`/`scripts`/
+`benchmarks` directories seed their own subsystems; the rest are Louvain communities (seeded RNG, so runs
+are identical) constrained by directories; test files join the subsystem they depend on most. Labels are
+directory paths (`(root)` for root files); a repeated label becomes `dir (most-central-file)`. Subsystem
+ids are kept stable across runs by member overlap (Jaccard ≥ 0.5) with the previous run. Subsystems made
+only of tests carry `props.isTest` (hidden unless `includeTests`).
+
+**Layer violations** (`type: 'layer-violation'`): directory A depends on sibling directory B ≥ 3× as much
+(weight, over ≥ 2 file pairs) as B depends on A → each B → A dependency is reported as upward. Nested
+directories are never compared.
+
+Planned (see `IMPLEMENTATION_PLAN.md`): `POST /repos/:id/ask` (Phase 5).
 
 ## Repo events & watch mode
 

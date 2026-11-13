@@ -1,13 +1,19 @@
 import type {
   Diagnostic,
   EndpointSummary,
+  ExternalUsage,
   GraphNode,
   JobProgress,
+  MatrixCell,
+  MatrixResult,
   NodeDetail,
+  NodeHistory,
   ProjectionRequest,
+  RemoteRefs,
   RepoInfo,
   SearchHit,
   SubGraph,
+  SubsystemOverrides,
   TraceResult,
 } from '@spider/shared';
 
@@ -40,6 +46,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error body: keep the status text */
     }
+    // the server's catch-all answers unknown API routes with a bare "not found"
+    if (res.status === 404 && msg.toLowerCase() === 'not found')
+      msg = 'Not available on this server. Update Spider and restart `spider serve`.';
     throw new ApiError(res.status, msg || `HTTP ${res.status}`);
   }
   return (await res.json()) as T;
@@ -74,6 +83,12 @@ export interface SourceSnippet {
   lines: string[];
   totalLines: number;
 }
+
+export type Overrides = SubsystemOverrides;
+export type Matrix = MatrixResult;
+export type { ExternalUsage, MatrixCell, NodeHistory, RemoteRefs };
+export type DiagnosticType = Diagnostic['type'];
+export type AnyDiagnostic = Diagnostic;
 
 /** Projection request as the web app sends it (focus fields are optional server-side). */
 export type GraphRequest = ProjectionRequest & { focus?: string; focusDepth?: number };
@@ -117,11 +132,55 @@ export const api = {
   endpoints: (id: string) => request<EndpointSummary[]>(`/repos/${enc(id)}/endpoints`),
   trace: (id: string, endpointId: string, depth = 6) =>
     request<TraceResult>(`/repos/${enc(id)}/trace/${enc(endpointId)}${qs({ depth })}`),
-  diagnostics: (id: string) => request<Diagnostic[]>(`/repos/${enc(id)}/diagnostics`),
+  diagnostics: (id: string) => request<AnyDiagnostic[]>(`/repos/${enc(id)}/diagnostics`),
   subsystems: (id: string) => request<SubsystemEntry[]>(`/repos/${enc(id)}/subsystems`),
   tree: (id: string, node = 'repo', depth = 1) => request<TreeNode[]>(`/repos/${enc(id)}/tree${qs({ node, depth })}`),
-  exportUrl: (id: string, format: 'json' | 'dot') => `${BASE}/repos/${enc(id)}/export?format=${format}`,
+  exportUrl: (id: string, format: 'json' | 'dot' | 'graphml') => `${BASE}/repos/${enc(id)}/export?format=${format}`,
+  reportUrl: (id: string) => `${BASE}/repos/${enc(id)}/report?format=md`,
+  overrides: (id: string) => request<Overrides>(`/repos/${enc(id)}/overrides`),
+  saveOverrides: (id: string, body: Overrides) =>
+    request<{ ok: true }>(`/repos/${enc(id)}/overrides`, { method: 'PUT', body: JSON.stringify(body) }),
+  history: (id: string, nodeId: string) => request<NodeHistory>(`/repos/${enc(id)}/nodes/${enc(nodeId)}/history`),
+  matrix: (id: string, level: 'L1' | 'L2', expanded: string[], includeTests: boolean) =>
+    request<Matrix>(
+      `/repos/${enc(id)}/matrix${qs({ level, expanded, includeTests: includeTests ? 'true' : undefined })}`,
+    ),
+  externals: (id: string) => request<ExternalUsage[]>(`/repos/${enc(id)}/externals`),
+  remoteRefs: (source: string) => request<RemoteRefs>(`/remote/refs${qs({ source })}`),
 };
+
+/** Subscribes to `WS /repos/:id/events`; calls `onUpdated` after each re-analysis. Returns a stop function. */
+export function watchRepo(repoId: string, onUpdated: (analysedAt: string) => void): () => void {
+  let ws: WebSocket | undefined;
+  let timer: number | undefined;
+  let stopped = false;
+  const open = (delay: number) => {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    try {
+      ws = new WebSocket(`${proto}://${window.location.host}${BASE}/repos/${enc(repoId)}/events`);
+    } catch {
+      return;
+    }
+    ws.onmessage = (ev) => {
+      try {
+        const m = JSON.parse(String(ev.data)) as { type?: string; analysedAt?: string };
+        if (m.type === 'updated') onUpdated(m.analysedAt ?? '');
+      } catch {
+        /* ignore malformed frame */
+      }
+    };
+    // server restarts drop the socket: reconnect with backoff (max 30 s)
+    ws.onclose = () => {
+      if (!stopped) timer = window.setTimeout(() => open(Math.min(30_000, delay * 2)), delay);
+    };
+  };
+  open(1000);
+  return () => {
+    stopped = true;
+    if (timer) window.clearTimeout(timer);
+    ws?.close();
+  };
+}
 
 /**
  * Streams job progress over `WS /jobs/:id/events`, falling back to polling every 400 ms if the

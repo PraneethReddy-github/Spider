@@ -74,7 +74,7 @@ export function useShortcuts(): void {
       }
       if (e.key in LEVEL_KEYS) {
         s.setLevel(LEVEL_KEYS[e.key as keyof typeof LEVEL_KEYS]);
-        if (s.view !== 'map') s.setView('map');
+        if (s.view !== 'map' && s.view !== 'matrix') s.setView('map');
       }
     };
     window.addEventListener('keydown', onKey);

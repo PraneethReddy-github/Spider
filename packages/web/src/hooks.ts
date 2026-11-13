@@ -1,7 +1,7 @@
-import type { Diagnostic, GraphNode } from '@spider/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { GraphNode } from '@spider/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
-import { api } from './api';
+import { type AnyDiagnostic, type Overrides, api } from './api';
 import { editorUrl } from './editor';
 import { type ViewMode, useStore } from './store';
 
@@ -51,17 +51,81 @@ export function useDiagnostics(repoId: string) {
   return useQuery({ queryKey: ['diagnostics', repoId], queryFn: () => api.diagnostics(repoId), staleTime: 5 * 60_000 });
 }
 
-/** Diagnostic rings: cycles in danger, god modules in warn. */
+/**
+ * Reveals several nodes on the Map at once (diagnostics): expands every needed ancestor, selects the
+ * first and centres on it. Capped so a huge diagnostic doesn't expand the whole repo.
+ */
+export function useRevealMany() {
+  const qc = useQueryClient();
+  return useCallback(
+    async (ids: string[]) => {
+      const s = useStore.getState();
+      const repoId = s.repoId;
+      if (!repoId || !ids.length) return;
+      s.select(ids[0]);
+      if (s.view !== 'map') s.setView('map');
+      const details = await Promise.all(
+        ids
+          .slice(0, 24)
+          .map((id) =>
+            qc
+              .fetchQuery({ queryKey: ['node', repoId, id], queryFn: () => api.node(repoId, id), staleTime: 60_000 })
+              .catch(() => undefined),
+          ),
+      );
+      const toExpand: string[] = [];
+      for (const d of details) {
+        if (!d || mapVisible.ids.has(d.node.id)) continue;
+        for (const p of d.parents) {
+          if (p.id === 'repo' || p.kind === 'repository') break;
+          toExpand.push(p.id);
+          if (mapVisible.ids.has(p.id)) break;
+        }
+      }
+      if (toExpand.length) useStore.getState().expandMany(toExpand);
+      useStore.getState().setCenterOn(ids[0]);
+    },
+    [qc],
+  );
+}
+
+export const EMPTY_OVERRIDES: Overrides = { rename: {}, merge: [], pins: {} };
+
+export function useOverrides(repoId: string) {
+  return useQuery({ queryKey: ['overrides', repoId], queryFn: () => api.overrides(repoId), retry: false });
+}
+
+/** Saves subsystem overrides (read-modify-write on the latest copy) and refreshes everything derived from them. */
+export function useSaveOverrides(repoId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (update: (o: Overrides) => Overrides) => {
+      const cur = await qc.fetchQuery({ queryKey: ['overrides', repoId], queryFn: () => api.overrides(repoId) });
+      const next = update({ ...EMPTY_OVERRIDES, ...cur });
+      await api.saveOverrides(repoId, next);
+      return next;
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(['overrides', repoId], next);
+      for (const key of ['graph', 'subsystems', 'diagnostics', 'node', 'matrix', 'tree'])
+        void qc.invalidateQueries({ queryKey: [key, repoId] });
+    },
+    onError: (e: Error) => useStore.getState().notify(`Could not save: ${e.message}`),
+  });
+}
+
+/** Diagnostic rings: cycles in danger, god modules and layer violations in warn. */
 export function useMarks(repoId: string): Map<string, 'danger' | 'warn'> {
   const { data } = useDiagnostics(repoId);
   return useMemo(() => marksFrom(data ?? []), [data]);
 }
 
-export function marksFrom(diags: Diagnostic[]): Map<string, 'danger' | 'warn'> {
+export function marksFrom(diags: AnyDiagnostic[]): Map<string, 'danger' | 'warn'> {
   const m = new Map<string, 'danger' | 'warn'>();
   for (const d of diags) {
     if (d.type === 'cycle') for (const id of d.nodeIds) m.set(id, 'danger');
-    else if (d.type === 'god-module') for (const id of d.nodeIds) if (!m.has(id)) m.set(id, 'warn');
+    else if (d.type === 'god-module' || d.type === 'layer-violation')
+      for (const id of d.nodeIds) if (!m.has(id)) m.set(id, 'warn');
   }
   return m;
 }

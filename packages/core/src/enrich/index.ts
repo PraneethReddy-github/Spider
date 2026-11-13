@@ -1,46 +1,54 @@
 import path from 'node:path';
-import type { Diagnostic, GraphNode } from '@spider/shared';
+import type { Diagnostic, SubsystemOverrides } from '@spider/shared';
 import Graph from 'graphology';
-import louvain from 'graphology-communities-louvain';
 import pagerank from 'graphology-metrics/centrality/pagerank.js';
 import type { GraphBuilder } from '../graph/builder.js';
 import { ids } from '../graph/ids.js';
 import type { Discovery } from '../pipeline/discover.js';
+import { computeBetweenness } from './betweenness.js';
+import { findLayerViolations } from './layers.js';
+import {
+  EMPTY_OVERRIDES,
+  SOURCE_LANGS,
+  type SubsystemGroup,
+  applySubsystems,
+  inferSubsystems,
+  matchPrevious,
+} from './subsystems.js';
 
-const SOURCE_LANGS = new Set([
-  'typescript',
-  'tsx',
-  'javascript',
-  'python',
-  'go',
-  'rust',
-  'java',
-  'kotlin',
-  'csharp',
-  'ruby',
-  'php',
-  'c',
-  'cpp',
-]);
+export { layerize } from './layers.js';
+export { EMPTY_OVERRIDES, applySubsystems, groupsFromGraph, type SubsystemGroup } from './subsystems.js';
+
+export interface EnrichOptions {
+  /** Subsystems of the previous run (graph meta `subsystems`), to keep subsystem ids stable. */
+  previousSubsystems?: SubsystemGroup[];
+  overrides?: SubsystemOverrides;
+}
 
 export interface EnrichResult {
   diagnostics: Diagnostic[];
   subsystems: number;
+  /** Inferred subsystems before overrides (persist as graph meta `subsystems`). */
+  subsystemGroups: SubsystemGroup[];
 }
 
-export function enrich(g: GraphBuilder, d: Discovery): EnrichResult {
+export function enrich(g: GraphBuilder, d: Discovery, opts: EnrichOptions = {}): EnrichResult {
   markEntryPoints(g, d);
   computeDegrees(g);
   const fileGraph = buildFileGraph(g);
   computePagerank(g, fileGraph);
-  const subsystems = inferSubsystems(g, fileGraph);
+  computeBetweenness(g, fileGraph);
+  const subsystemGroups = inferSubsystems(g, fileGraph, d);
+  matchPrevious(subsystemGroups, opts.previousSubsystems);
+  const subsystems = applySubsystems(g, subsystemGroups, opts.overrides ?? EMPTY_OVERRIDES);
   const diagnostics = [
     ...findCycles(g, fileGraph),
+    ...findLayerViolations(g, fileGraph),
     ...findDeadCode(g),
     ...findGodModules(g),
     ...findOrphans(g, fileGraph),
   ];
-  return { diagnostics, subsystems };
+  return { diagnostics, subsystems, subsystemGroups };
 }
 
 function markEntryPoints(g: GraphBuilder, d: Discovery): void {
@@ -122,137 +130,6 @@ function computePagerank(g: GraphBuilder, fg: Graph): void {
   } catch {
     /* pagerank can fail on degenerate graphs */
   }
-}
-
-/**
- * Subsystem inference: Louvain communities on the undirected file graph, constrained by
- * directory structure (small communities are merged into their directory's dominant community),
- * labelled by the longest common directory prefix.
- */
-function inferSubsystems(g: GraphBuilder, fg: Graph): number {
-  const files = g.nodesOfKind('file').filter((f) => SOURCE_LANGS.has(f.language ?? ''));
-  if (files.length === 0) return 0;
-
-  const ug = new Graph({ type: 'undirected' });
-  for (const f of files) ug.addNode(f.id);
-  fg.forEachEdge((_e, attrs, s, t) => {
-    if (!ug.hasNode(s) || !ug.hasNode(t)) return;
-    if (ug.hasEdge(s, t)) ug.updateEdgeAttribute(s, t, 'weight', (x: number) => x + attrs.weight);
-    else ug.addEdge(s, t, { weight: attrs.weight });
-  });
-
-  let community: Record<string, number> = {};
-  if (ug.size > 0) {
-    try {
-      community = louvain(ug, { getEdgeWeight: 'weight', resolution: 1 });
-    } catch {
-      community = {};
-    }
-  }
-  // Files without edges: assign by top-level directory
-  const dirKey = (p: string) => {
-    const parts = p.split('/');
-    return parts.length > 1 ? parts.slice(0, Math.min(2, parts.length - 1)).join('/') : '(root)';
-  };
-  let nextId = Math.max(-1, ...Object.values(community)) + 1;
-  const byDir = new Map<string, number>();
-  for (const f of files) {
-    if (community[f.id] === undefined) {
-      const k = dirKey(f.file ?? '');
-      let c = byDir.get(k);
-      if (c === undefined) byDir.set(k, (c = nextId++));
-      community[f.id] = c;
-    }
-  }
-
-  // Merge tiny communities (< 3 files) into the dominant community of their directory.
-  const members = new Map<number, GraphNode[]>();
-  for (const f of files) {
-    const c = community[f.id];
-    let l = members.get(c);
-    if (!l) members.set(c, (l = []));
-    l.push(f);
-  }
-  const dirDominant = new Map<string, number>();
-  for (const [c, list] of members) {
-    if (list.length < 3) continue;
-    for (const f of list) {
-      const dir = path.posix.dirname(f.file ?? '');
-      const cur = dirDominant.get(dir);
-      if (cur === undefined || (members.get(cur)?.length ?? 0) < list.length) dirDominant.set(dir, c);
-    }
-  }
-  for (const [c, list] of members) {
-    if (list.length >= 3) continue;
-    for (const f of list) {
-      const dir = path.posix.dirname(f.file ?? '');
-      const dom = dirDominant.get(dir) ?? dirDominant.get(path.posix.dirname(dir));
-      if (dom !== undefined) community[f.id] = dom;
-    }
-  }
-
-  // Regroup, label, emit
-  const groups = new Map<number, GraphNode[]>();
-  for (const f of files) {
-    const c = community[f.id];
-    let l = groups.get(c);
-    if (!l) groups.set(c, (l = []));
-    l.push(f);
-  }
-  const usedLabels = new Map<string, number>();
-  let count = 0;
-  for (const [, list] of [...groups.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    let label = commonDirPrefix(list.map((f) => f.file ?? ''));
-    if (!label || usedLabels.has(label))
-      label = dominantDir(
-        list.map((f) => f.file ?? ''),
-        label,
-      );
-    if (!label) label = 'core';
-    const seen = usedLabels.get(label) ?? 0;
-    usedLabels.set(label, seen + 1);
-    if (seen > 0) label = `${label} #${seen + 1}`;
-    const id = ids.subsystem(label);
-    g.addNode({
-      id,
-      kind: 'subsystem',
-      name: label,
-      qname: label,
-      props: { memberCount: list.length, inferred: true },
-    });
-    for (const f of list) {
-      g.addEdge('member_of', f.id, id);
-      f.props.subsystem = id;
-    }
-    count++;
-  }
-  return count;
-}
-
-function commonDirPrefix(paths: string[]): string {
-  if (paths.length === 0) return '';
-  const split = paths.map((p) => p.split('/').slice(0, -1));
-  let prefix = split[0];
-  for (const s of split.slice(1)) {
-    let i = 0;
-    while (i < prefix.length && i < s.length && prefix[i] === s[i]) i++;
-    prefix = prefix.slice(0, i);
-    if (prefix.length === 0) break;
-  }
-  return prefix.join('/');
-}
-
-/** Most common directory among the paths, one level deeper than `prefix` when possible. */
-function dominantDir(paths: string[], prefix = ''): string {
-  const counts = new Map<string, number>();
-  const depth = prefix ? prefix.split('/').length + 1 : 1;
-  for (const p of paths) {
-    const parts = p.split('/').slice(0, -1);
-    const key = parts.length === 0 ? '(root)' : parts.slice(0, Math.min(parts.length, depth)).join('/');
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
-  return best;
 }
 
 /* ---------- diagnostics ---------- */

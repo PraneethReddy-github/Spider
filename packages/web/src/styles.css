@@ -1145,3 +1145,210 @@ a:hover {
 .table .table-select[aria-selected="true"] td:first-child {
   box-shadow: inset 2px 0 0 var(--accent);
 }
+
+/* native select, styled as an input (Size by, Ref, subsystem pin) */
+.select {
+  height: 28px;
+  padding: 0 24px 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bg-surface-2);
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+  color: var(--text-primary);
+  font-size: 13px;
+  min-width: 0;
+}
+.select:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft);
+}
+.select:disabled {
+  opacity: 0.4;
+}
+.select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+.segmented .segment-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+}
+
+/* ---------- 8. list views in the canvas area (Endpoints, Externals, Issues) ---------- */
+.view-page {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 16px 24px 48px;
+}
+.view-page-head {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  margin: -16px -24px 8px;
+  padding: 0 24px;
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--hairline);
+}
+.view-filter {
+  width: 320px;
+  margin-left: auto;
+}
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+}
+.th-sort:hover {
+  color: var(--text-secondary);
+}
+.table th.right .th-sort {
+  flex-direction: row-reverse;
+}
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 24px 0 4px;
+}
+.group-head:first-of-type {
+  margin-top: 8px;
+}
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.item-row .grow {
+  flex: 1;
+  min-width: 0;
+}
+.item-row .detail {
+  color: var(--text-tertiary);
+}
+.item-row .item-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.view-list {
+  max-width: 960px;
+}
+.list-head {
+  display: flex;
+  justify-content: space-between;
+  height: 32px;
+  align-items: center;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 4px;
+}
+
+/* ---------- 9. matrix (DSM) ---------- */
+.matrix-canvas,
+.matrix-scroll {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.matrix-canvas {
+  display: block;
+}
+.matrix-scroll {
+  overflow: auto;
+}
+.matrix-corner {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+.matrix-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.matrix-mark {
+  width: 12px;
+  height: 2px;
+  background: var(--warn);
+}
+
+/* subsystem overrides (Explorer) */
+.row-with-action {
+  position: relative;
+}
+.row-with-action .row-action {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.row-with-action:hover .row-action,
+.row-with-action:focus-within .row-action {
+  opacity: 1;
+}
+.row-with-action:hover .row .meta,
+.row-with-action:focus-within .row .meta {
+  visibility: hidden;
+}
+.subsystem-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 8px;
+}
+.link-button {
+  color: var(--accent-text);
+}
+.link-button:hover {
+  text-decoration: underline;
+}
+.ref-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary);
+}
+.ref-picker svg {
+  position: absolute;
+  left: 10px;
+  pointer-events: none;
+}
+.ref-picker .select {
+  height: 36px;
+  max-width: 200px;
+  padding-left: 32px;
+}
+.table-fixed {
+  table-layout: fixed;
+}
+.table-fixed td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

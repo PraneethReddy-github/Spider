@@ -35,7 +35,10 @@ export interface NodeMetrics {
   loc?: number;
   complexity?: number;
   pagerank?: number;
+  /** Commits touching the file in the last 6 months (files only; 0 outside git). */
   churn?: number;
+  /** Approximate normalised betweenness centrality on the file dependency graph (files only, 0..1). */
+  betweenness?: number;
 }
 
 export interface GraphNode {
@@ -198,11 +201,61 @@ export interface EndpointSummary {
 }
 
 export interface Diagnostic {
-  type: 'cycle' | 'dead-code' | 'god-module' | 'orphan';
+  type: 'cycle' | 'dead-code' | 'god-module' | 'orphan' | 'layer-violation';
   title: string;
   nodeIds: string[];
   severity: 'info' | 'warn' | 'error';
   detail?: string;
+}
+
+/**
+ * User corrections to inferred subsystems (`SPIDER_HOME/repos/<id>/overrides.json`). Applied in order:
+ * merge (groups of subsystem ids merged into the first), pins (repo-relative file path → subsystem
+ * id), rename (subsystem id → label).
+ */
+export interface SubsystemOverrides {
+  rename: Record<string, string>;
+  merge: string[][];
+  pins: Record<string, string>;
+}
+
+/** `GET /repos/:id/nodes/:nodeId/history` — git history of the node's file (author names only). */
+export interface NodeHistory {
+  commits: number;
+  authors: { name: string; commits: number }[];
+  /** ISO date of the latest commit touching the file. */
+  lastModified?: string;
+}
+
+export interface MatrixCell {
+  /** Row: index of the source node in `MatrixResult.nodes`. */
+  i: number;
+  /** Column: index of the target node. */
+  j: number;
+  weight: number;
+  kinds: Partial<Record<EdgeKind, number>>;
+}
+
+/** `GET /repos/:id/matrix` — dependency structure matrix, nodes ordered by layer then name. */
+export interface MatrixResult {
+  nodes: GraphNode[];
+  cells: MatrixCell[];
+  /** `layers[k]` = inferred layer of `nodes[k]` (0 = depends on nothing in the matrix). */
+  layers: number[];
+}
+
+/** `GET /repos/:id/externals` item — an external dependency and the source files that use it. */
+export interface ExternalUsage {
+  node: GraphNode;
+  total: number;
+  users: { node: GraphNode; weight: number }[];
+}
+
+/** `GET /remote/refs` — branches and tags of a remote git repository. */
+export interface RemoteRefs {
+  defaultBranch?: string;
+  branches: string[];
+  tags: string[];
 }
 
 export * from './schemas.js';

@@ -1,6 +1,6 @@
 import type { JobProgress, RepoInfo } from '@spider/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FolderGit2 } from 'lucide-react';
+import { FolderGit2, GitBranch } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { api, watchJob } from '../api';
 import { fmtDuration, fmtNum, fmtRelative, shortSource } from '../format';
@@ -36,8 +36,22 @@ export function Home() {
     });
   };
 
+  const [ref, setRef] = useState('');
+  const remote = looksRemote(source.trim());
+  const debounced = useDebounced(remote ? source.trim() : '', 400);
+  const refs = useQuery({
+    queryKey: ['remote-refs', debounced],
+    queryFn: () => api.remoteRefs(debounced),
+    enabled: Boolean(debounced),
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+  // a ref from another repository must not leak into this one
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the source changes
+  useEffect(() => setRef(''), [debounced]);
+
   const analyse = useMutation({
-    mutationFn: (s: string) => api.analyze({ source: s }),
+    mutationFn: (s: string) => api.analyze({ source: s, ref: remote && ref ? ref : undefined }),
     onMutate: () => {
       setError(undefined);
       setJob(undefined);
@@ -75,6 +89,47 @@ export function Home() {
               disabled={running}
             />
           </label>
+          {remote && (
+            <label className="ref-picker">
+              <span className="sr-only">Ref</span>
+              <GitBranch size={16} strokeWidth={1.5} aria-hidden="true" />
+              <select
+                className="select"
+                value={ref}
+                onChange={(e) => setRef(e.target.value)}
+                disabled={running || refs.isFetching}
+                title={refs.isError ? 'Could not list branches and tags; the default branch is used.' : 'Branch or tag'}
+              >
+                <option value="">
+                  {refs.isFetching
+                    ? 'Loading refs'
+                    : refs.data?.defaultBranch
+                      ? `${refs.data.defaultBranch} (default)`
+                      : 'Default branch'}
+                </option>
+                {refs.data && refs.data.branches.length > 0 && (
+                  <optgroup label="Branches">
+                    {refs.data.branches
+                      .filter((b) => b !== refs.data?.defaultBranch)
+                      .map((b) => (
+                        <option key={`b:${b}`} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+                {refs.data && refs.data.tags.length > 0 && (
+                  <optgroup label="Tags">
+                    {refs.data.tags.map((t) => (
+                      <option key={`t:${t}`} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+          )}
           <button type="submit" className="btn btn-primary btn-lg" disabled={!source.trim() || running}>
             Analyse
           </button>
@@ -133,6 +188,20 @@ function JobView({ job }: { job?: JobProgress }) {
       )}
     </div>
   );
+}
+
+/** GitHub URL or bare `owner/repo` (what the server clones); local paths start with /, ., ~ or a drive. */
+function looksRemote(s: string): boolean {
+  return /^(https?:\/\/)?(www\.)?github\.com\/[\w.-]+\/[\w.-]+/i.test(s) || /^[\w-]+\/[\w.-]+$/.test(s);
+}
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = window.setTimeout(() => setV(value), ms);
+    return () => window.clearTimeout(t);
+  }, [value, ms]);
+  return v;
 }
 
 const capitalise = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);

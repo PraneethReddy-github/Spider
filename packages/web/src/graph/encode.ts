@@ -1,6 +1,7 @@
 import type { GraphEdge, GraphNode, SubGraph } from '@spider/shared';
 import type Graph from 'graphology';
 import { locationOf, nodeLabel } from '../format';
+import type { SizeBy } from '../store';
 import {
   CONTAINER_KINDS,
   type ThemeName,
@@ -26,6 +27,8 @@ export interface EncodeOptions {
   labelAll?: boolean;
   /** Draw labels centred under nodes (column layouts, where edges run through the label side). */
   labelBelow?: boolean;
+  /** Size nodes by a metric instead of the per-kind default (nodes without the metric keep the default). */
+  sizeBy?: SizeBy;
 }
 
 export interface Encoded {
@@ -92,6 +95,7 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
   const ranked = labelCandidates.sort((a, b) => nodeSize(b) - nodeSize(a));
   for (const n of ranked.slice(0, nodes.length > LABEL_CAP ? 60 : LABEL_CAP)) forced.add(n.id);
 
+  const sizeOf = metricSizer(nodes, o.sizeBy);
   for (const n of nodes) {
     const look = nodeLook(n.kind, o.theme);
     let fill = look.fill;
@@ -107,7 +111,7 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
       label: nodeLabel(n),
       fullLabel: n.qname ?? nodeLabel(n),
       kind: n.kind,
-      size: isGroup ? 7 : nodeSize(n),
+      size: isGroup ? 7 : sizeOf(n),
       color: fill,
       shape: look.shape,
       ringColor: mark ? t[mark] : look.ring,
@@ -146,6 +150,26 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
     });
   }
   return { nodes, edges, groups };
+}
+
+/**
+ * Radius 4–26 px by `sizeBy`, normalised to the largest visible value: counts (churn, LOC) on a log
+ * scale, centralities (PageRank, betweenness: small fractions) by square root so area tracks value.
+ */
+function metricSizer(nodes: GraphNode[], sizeBy: SizeBy | undefined): (n: GraphNode) => number {
+  if (!sizeBy || sizeBy === 'default') return nodeSize;
+  const value = (n: GraphNode) => n.metrics?.[sizeBy];
+  let max = 0;
+  for (const n of nodes) max = Math.max(max, value(n) ?? 0);
+  if (max <= 0) return nodeSize;
+  const scale =
+    sizeBy === 'pagerank' || sizeBy === 'betweenness'
+      ? (v: number) => Math.sqrt(v / max)
+      : (v: number) => Math.log2(1 + v) / Math.log2(1 + max);
+  return (n) => {
+    const v = value(n);
+    return v === undefined ? nodeSize(n) : 4 + 22 * scale(v);
+  };
 }
 
 /** Animates node positions to `target` over `ms` (ease-out). Returns a cancel function. */

@@ -9,6 +9,7 @@ import { fmtNum } from '../format';
 import { type ThemeName, blend, graphPalette, tokens } from '../theme';
 import { KindBadge } from '../ui';
 import { drawHover, drawLabel, drawTheme } from './draw';
+import { type ExportSource, exportTarget, sigmaPng, sigmaSvg } from './exportImage';
 import { NodeShapeProgram } from './program';
 
 export interface GraphCanvasProps {
@@ -80,7 +81,13 @@ export function GraphCanvas(p: GraphCanvasProps) {
     const s = new Sigma(p.graph, el, settings);
     setSigma(s);
     props.current.onReady?.(s);
+    const source: ExportSource = {
+      png: () => sigmaPng(s, props.current.theme),
+      svg: () => sigmaSvg(s, props.current.theme, regionRects(s, props.current.groups)),
+    };
+    exportTarget.current = source;
     return () => {
+      if (exportTarget.current === source) exportTarget.current = undefined;
       props.current.onReady?.(undefined);
       s.kill();
       setSigma(undefined);
@@ -318,6 +325,8 @@ export function GraphCanvas(p: GraphCanvasProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutVersion retries once the projection containing the node lands
   useEffect(() => {
     if (!sigma || !p.centerOn || !graph.hasNode(p.centerOn)) return;
+    // nodes added since the last frame still carry raw graph coordinates; index them before reading
+    sigma.refresh();
     const d = sigma.getNodeDisplayData(p.centerOn);
     if (d) {
       const ratio = Math.min(sigma.getCamera().ratio, 0.5);

@@ -62,7 +62,7 @@ export const pathQuerySchema = z.object({
 export const endpointsQuerySchema = z.object({ includeTests: bool });
 
 export const diagnosticsQuerySchema = z.object({
-  type: z.enum(['cycle', 'dead-code', 'god-module', 'orphan']).optional(),
+  type: z.enum(['cycle', 'dead-code', 'god-module', 'orphan', 'layer-violation']).optional(),
 });
 
 export const treeQuerySchema = z.object({
@@ -75,12 +75,37 @@ export const sourceQuerySchema = z.object({ context: int(0, 1000).default(5) });
 export const exportFormatSchema = z.enum(['json', 'dot', 'graphml']);
 export const exportQuerySchema = z.object({ format: exportFormatSchema.default('json') });
 
+/** `GET /repos/:id/matrix`. */
+export const matrixQuerySchema = z.object({
+  level: z.enum(['L1', 'L2']).default('L1'),
+  expanded: csv(z.string()),
+  includeTests: bool,
+});
+
+/** `GET /repos/:id/report`. */
+export const reportQuerySchema = z.object({ format: z.enum(['md']).default('md') });
+
+/** `GET /remote/refs`. */
+export const remoteRefsQuerySchema = z.object({
+  source: z.string({ required_error: 'required' }).min(1, 'required'),
+});
+
+/** `PUT /repos/:id/overrides` body (`SubsystemOverrides`); missing fields default to empty. */
+export const subsystemOverridesSchema = z
+  .object({
+    rename: z.record(z.string().min(1), z.string().min(1).max(200)).default({}),
+    merge: z.array(z.array(z.string().min(1)).min(2)).default([]),
+    pins: z.record(z.string().min(1), z.string().min(1)).default({}),
+  })
+  .strict();
+
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type TraversalQuery = z.infer<typeof traversalQuerySchema>;
 export type SearchQuery = z.infer<typeof searchQuerySchema>;
 export type PathQuery = z.infer<typeof pathQuerySchema>;
 export type TreeQuery = z.infer<typeof treeQuerySchema>;
 export type ExportFormat = z.infer<typeof exportFormatSchema>;
+export type MatrixQuery = z.infer<typeof matrixQuerySchema>;
 
 /** Parses a query object; on failure returns a single readable message such as `depth: must be ≤ 6`. */
 export function parseQuery<S extends z.ZodTypeAny>(

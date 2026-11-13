@@ -1,9 +1,8 @@
 import type { ViewLevel } from '@spider/shared';
-import { type FlowQuery, type ViewMode, type ViewSnapshot, useStore } from './store';
+import { type FlowQuery, VIEW_MODES, type ViewMode, type ViewSnapshot, useStore } from './store';
 
 type UrlState = ViewSnapshot;
 
-const VIEWS: ViewMode[] = ['map', 'focus', 'flow'];
 const LEVELS: ViewLevel[] = ['L0', 'L1', 'L2', 'L3'];
 
 export function readUrlState(search = window.location.search): Partial<UrlState> {
@@ -16,7 +15,7 @@ export function readUrlState(search = window.location.search): Partial<UrlState>
   const node = sp.get('node');
   if (node) out.selected = node;
   const view = sp.get('view') as ViewMode | null;
-  if (view && VIEWS.includes(view)) out.view = view;
+  if (view && VIEW_MODES.includes(view)) out.view = view;
   const flow = sp.get('flow');
   if (flow) {
     const [type, a, b] = flow.split('~');
