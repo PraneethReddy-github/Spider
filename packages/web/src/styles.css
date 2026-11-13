@@ -509,6 +509,14 @@ a:hover {
   margin: 4px 0;
   background: var(--hairline);
 }
+.menu-label {
+  padding: 8px 8px 4px;
+  color: var(--text-tertiary);
+}
+.menu-item .menu-check {
+  margin-left: auto;
+  color: var(--accent-text);
+}
 
 .panel-header {
   display: flex;
@@ -563,6 +571,28 @@ a:hover {
 .code-line[data-hl="true"] {
   background: var(--accent-soft);
   box-shadow: inset 2px 0 0 var(--accent);
+}
+/* 4-tone monochrome syntax (DESIGN_RULES §7): primary is inherited */
+.tok-2 {
+  color: var(--text-secondary);
+}
+.tok-3 {
+  color: var(--text-tertiary);
+}
+.tok-4 {
+  color: var(--accent-text);
+}
+.code-link {
+  font: inherit;
+  white-space: pre;
+  border-radius: 4px;
+  text-decoration: underline dotted var(--hairline-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.code-link:hover,
+.code-link:focus-visible {
+  text-decoration: underline solid var(--text-secondary);
 }
 
 .progress {

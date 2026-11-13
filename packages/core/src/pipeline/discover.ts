@@ -245,6 +245,8 @@ const NPM_FRAMEWORKS: Record<string, string> = {
   express: 'express',
   fastify: 'fastify',
   koa: 'koa',
+  '@koa/router': 'koa',
+  'koa-router': 'koa',
   hono: 'hono',
   '@nestjs/core': 'nestjs',
   next: 'nextjs',

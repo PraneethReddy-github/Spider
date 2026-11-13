@@ -13,8 +13,9 @@ describe('typescript / express fixture', async () => {
   });
 
   it('splits library calls from unresolved calls', () => {
-    expect(stats.externalCalls).toBe(5);
-    expect(stats.unresolvedCalls).toBe(1); // pool.query: `pool` is assigned, not bound, so its type is unknown
+    // app.get × 2 (`app: Express`) and pool.query (`let pool: Pool`) are typed as library receivers
+    expect(stats.externalCalls).toBe(8);
+    expect(stats.unresolvedCalls).toBe(0);
   });
 
   it('builds symbol nodes with hierarchy', () => {

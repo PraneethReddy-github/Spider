@@ -164,12 +164,31 @@ export interface JobProgress {
   repoId?: string;
 }
 
+/** Message on `WS /repos/:id/events`: a (re-)analysis of the repo finished; refetch its queries. */
+export interface RepoEvent {
+  type: 'updated';
+  repoId: string;
+  analysedAt: string;
+}
+
 export interface NodeDetail {
   node: GraphNode;
   parents: GraphNode[];
   incoming: { edge: GraphEdge; node: GraphNode }[];
   outgoing: { edge: GraphEdge; node: GraphNode }[];
   children: GraphNode[];
+}
+
+/** `GET /repos/:id/trace/:nodeId` — an endpoint's execution flow, ready for the Flow view. */
+export interface TraceResult extends SubGraph {
+  /** BFS hop count from the endpoint (0) for every node. */
+  distances: Record<string, number>;
+  /** Node ids grouped by distance, in a stable order (index = distance). */
+  layers: string[][];
+  /** Middleware the endpoint runs before its handler, in execution order (empty when unknown). */
+  middleware: string[];
+  /** Datastore/external nodes where the trace stopped (included, never traversed past). */
+  boundaries: string[];
 }
 
 export interface EndpointSummary {

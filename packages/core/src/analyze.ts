@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import { promises as fs, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import type { EdgeKind, NodeKind, RepoInfo, RepoStats } from '@spider/shared';
 import { simpleGit } from 'simple-git';
 import { enrich } from './enrich/index.js';
 import { GraphBuilder } from './graph/builder.js';
 import { discover, emitStructure } from './pipeline/discover.js';
-import { extractAll } from './pipeline/extract.js';
+import { extractAllWithStats } from './pipeline/extract.js';
 import { resolve } from './pipeline/resolve.js';
 import { SqliteStore } from './store/sqlite.js';
 
@@ -106,10 +108,17 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   emitStructure(g, d, name);
 
   /* ---------- parse + extract ---------- */
-  const facts = await extractAll(d.files, {
+  const { facts, stats: ex } = await extractAllWithStats(d.files, {
     cacheDir: path.join(home, 'cache'),
     frameworks: d.frameworks,
-    onProgress: (done, total, file) => progress({ stage: 'parse', current: done, total, message: file }),
+    onProgress: (done, total, file) =>
+      done < total && progress({ stage: 'parse', current: done, total, message: file }),
+  });
+  progress({
+    stage: 'parse',
+    current: ex.files,
+    total: ex.files,
+    message: `${ex.reused} reused, ${ex.extracted} re-extracted${ex.workers ? ` on ${ex.workers} workers` : ''}`,
   });
 
   /* ---------- resolve ---------- */
@@ -159,6 +168,30 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
     message: `${stats.nodes} nodes, ${stats.edges} edges in ${(info.durationMs / 1000).toFixed(1)}s`,
   });
   return info;
+}
+
+/**
+ * `analyze` on a worker thread, so a server's event loop stays free while resolve/enrich/persist run.
+ * Falls back to in-process `analyze` when the built worker entry is absent (running from sources).
+ */
+export async function analyzeInWorker(opts: AnalyzeOptions): Promise<RepoInfo> {
+  const url = new URL('./pipeline/analyze-worker.js', import.meta.url);
+  if (!existsSync(fileURLToPath(url))) return analyze(opts);
+  const { onProgress, ...data } = opts;
+  const worker = new Worker(url, { workerData: data });
+  try {
+    return await new Promise<RepoInfo>((resolve, reject) => {
+      worker.on('message', (m: { progress?: ProgressEvent; info?: RepoInfo; error?: string }) => {
+        if (m.progress) onProgress?.(m.progress);
+        else if (m.info) resolve(m.info);
+        else reject(new Error(m.error));
+      });
+      worker.on('error', reject);
+      worker.on('exit', (code) => reject(new Error(`analysis worker exited with code ${code}`)));
+    });
+  } finally {
+    await worker.terminate();
+  }
 }
 
 function computeStats(

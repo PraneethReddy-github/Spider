@@ -8,6 +8,7 @@ import type {
   RepoInfo,
   SearchHit,
   SubGraph,
+  TraceResult,
 } from '@spider/shared';
 
 const BASE = '/api/v1';
@@ -115,7 +116,7 @@ export const api = {
   path: (id: string, from: string, to: string) => request<SubGraph>(`/repos/${enc(id)}/path${qs({ from, to })}`),
   endpoints: (id: string) => request<EndpointSummary[]>(`/repos/${enc(id)}/endpoints`),
   trace: (id: string, endpointId: string, depth = 6) =>
-    request<SubGraphWithDistances>(`/repos/${enc(id)}/trace/${enc(endpointId)}${qs({ depth })}`),
+    request<TraceResult>(`/repos/${enc(id)}/trace/${enc(endpointId)}${qs({ depth })}`),
   diagnostics: (id: string) => request<Diagnostic[]>(`/repos/${enc(id)}/diagnostics`),
   subsystems: (id: string) => request<SubsystemEntry[]>(`/repos/${enc(id)}/subsystems`),
   tree: (id: string, node = 'repo', depth = 1) => request<TreeNode[]>(`/repos/${enc(id)}/tree${qs({ node, depth })}`),

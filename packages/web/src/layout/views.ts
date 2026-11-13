@@ -42,34 +42,52 @@ export function radialLayout(
   }
   const finite = ordered.map((n) => dist(n.id)).filter(Number.isFinite);
   const maxD = Math.max(1, ...finite);
+  let r = 0;
   for (let d = 1; d <= maxD; d++) {
     const ring = ordered.filter((n) => (Number.isFinite(dist(n.id)) ? dist(n.id) : maxD) === d);
-    const r = 140 * d;
-    arc(
-      ring.filter((n) => side.get(n.id) === 'in'),
+    r += RING_STEP;
+    const inner = r;
+    r = Math.max(
       r,
-      Math.PI / 2,
-      (3 * Math.PI) / 2,
-      pos,
-    );
-    arc(
-      ring.filter((n) => side.get(n.id) !== 'in'),
-      r,
-      -Math.PI / 2,
-      Math.PI / 2,
-      pos,
+      arc(
+        ring.filter((n) => side.get(n.id) === 'in'),
+        inner,
+        Math.PI / 2,
+        (3 * Math.PI) / 2,
+        pos,
+      ),
+      arc(
+        ring.filter((n) => side.get(n.id) !== 'in'),
+        inner,
+        -Math.PI / 2,
+        Math.PI / 2,
+        pos,
+      ),
     );
   }
   return pos;
 }
 
-function arc(list: GraphNode[], r: number, from: number, to: number, pos: Map<string, Pos>) {
+const RING_STEP = 140;
+/** Minimum arc distance between neighbours on one sub-ring, and the gap between sub-rings. */
+const NODE_GAP = 40;
+const SUB_RING_GAP = 44;
+
+/**
+ * Spreads `list` evenly over the arc [from, to]. When the arc at radius `r` is too short for the
+ * labels, consecutive nodes alternate between k staggered sub-rings so neighbours never share a
+ * radius. Returns the outermost radius used.
+ */
+function arc(list: GraphNode[], r: number, from: number, to: number, pos: Map<string, Pos>): number {
   const step = (to - from) / (list.length + 1);
+  const k = Math.max(1, Math.ceil(NODE_GAP / (Math.abs(step) * r)));
   list.forEach((node, i) => {
     const a = from + step * (i + 1);
+    const ri = r + (i % k) * SUB_RING_GAP;
     // graph y points up in sigma; negate so the first item sits at the top of each half
-    pos.set(node.id, { x: Math.cos(a) * r, y: -Math.sin(a) * r });
+    pos.set(node.id, { x: Math.cos(a) * ri, y: -Math.sin(a) * ri });
   });
+  return list.length ? r + (k - 1) * SUB_RING_GAP : r;
 }
 
 /**

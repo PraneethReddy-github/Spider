@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Benchmarks the analysis pipeline in-memory (no persistence, no cache, no network).
+// SPIDER_WORKERS=<n> fixes the parse worker count (0 = in-process); default is auto.
 // Uses fastify/fastify and pallets/flask from the SPIDER_HOME clone cache when present, else the fixtures.
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -12,7 +13,8 @@ const core = await import(path.join(root, 'packages/core/dist/index.js')).catch(
   console.error('Build core first: pnpm -r --filter @spider/core... run build');
   process.exit(1);
 });
-const { GraphBuilder, QueryService, discover, emitStructure, enrich, extractAll, resolve } = core;
+const { GraphBuilder, QueryService, discover, emitStructure, enrich, extractAllWithStats, resolve } = core;
+const workers = process.env.SPIDER_WORKERS === undefined ? undefined : Number(process.env.SPIDER_WORKERS);
 
 const home = process.env.SPIDER_HOME ?? path.join(os.homedir(), '.spider');
 const cloneOf = (slug) =>
@@ -36,7 +38,7 @@ for (const t of targets) {
   emitStructure(g, d, t.name);
   const tDisc = ms(t0);
   let t1 = performance.now();
-  const facts = await extractAll(d.files, { frameworks: d.frameworks });
+  const { facts, stats: ex } = await extractAllWithStats(d.files, { frameworks: d.frameworks, workers });
   const tParse = ms(t1);
   t1 = performance.now();
   resolve(g, d, facts);
@@ -58,6 +60,6 @@ for (const t of targets) {
   console.log(
     `  files ${num(d.files.length)}  nodes ${num(g.nodes.size)}  edges ${num(g.edges.size)}  total ${total}s`,
   );
-  console.log(`  discover ${tDisc}  parse ${tParse}  resolve ${tRes}  enrich ${tEnr}`);
+  console.log(`  discover ${tDisc}  parse ${tParse} (${ex.workers || 'no'} workers)  resolve ${tRes}  enrich ${tEnr}`);
   console.log(`  projection ${proj.join(' · ')}  search ${tSearch}`);
 }

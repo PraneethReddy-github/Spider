@@ -1,7 +1,20 @@
 import type { RepoInfo, ViewLevel } from '@spider/shared';
-import { Download, Maximize, Moon, PanelLeft, PanelRight, Search, Sun } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import {
+  Check,
+  Download,
+  Maximize,
+  Moon,
+  PanelLeft,
+  PanelRight,
+  Redo2,
+  Search,
+  Settings,
+  Sun,
+  Undo2,
+} from 'lucide-react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { EDITORS } from '../editor';
 import { navigate } from '../router';
 import { type ViewMode, useStore } from '../store';
 import { IconButton, Segmented } from '../ui';
@@ -55,6 +68,22 @@ export function TopBar({ repo }: { repo?: RepoInfo }) {
         <span className="kbd">{isMac ? '⌘K' : 'Ctrl K'}</span>
       </button>
       <div className="tools">
+        <IconButton
+          label="Undo view change"
+          shortcut={isMac ? '⌘Z' : 'Ctrl+Z'}
+          disabled={!s.past.length}
+          onClick={s.undo}
+        >
+          <Undo2 {...ICON} />
+        </IconButton>
+        <IconButton
+          label="Redo view change"
+          shortcut={isMac ? '⇧⌘Z' : 'Ctrl+Shift+Z'}
+          disabled={!s.future.length}
+          onClick={s.redo}
+        >
+          <Redo2 {...ICON} />
+        </IconButton>
         <IconButton label="Fit to screen" shortcut="F" onClick={s.fit}>
           <Maximize {...ICON} />
         </IconButton>
@@ -65,6 +94,7 @@ export function TopBar({ repo }: { repo?: RepoInfo }) {
         >
           {s.theme === 'dark' ? <Sun {...ICON} /> : <Moon {...ICON} />}
         </IconButton>
+        <SettingsMenu />
         <IconButton label="Explorer panel" pressed={s.panels.explorer} onClick={() => s.togglePanel('explorer')}>
           <PanelLeft {...ICON} />
         </IconButton>
@@ -77,6 +107,70 @@ export function TopBar({ repo }: { repo?: RepoInfo }) {
 }
 
 function ExportMenu({ repoId }: { repoId: string }) {
+  return (
+    <MenuButton label="Export" icon={<Download {...ICON} />}>
+      {(close) => (
+        <>
+          <a
+            className="menu-item"
+            role="menuitem"
+            href={api.exportUrl(repoId, 'json')}
+            download={`${repoId}.json`}
+            onClick={close}
+          >
+            Graph as JSON
+          </a>
+          <a
+            className="menu-item"
+            role="menuitem"
+            href={api.exportUrl(repoId, 'dot')}
+            download={`${repoId}.dot`}
+            onClick={close}
+          >
+            Graph as Graphviz DOT
+          </a>
+        </>
+      )}
+    </MenuButton>
+  );
+}
+
+function SettingsMenu() {
+  const editor = useStore((s) => s.editor);
+  const setEditor = useStore((s) => s.setEditor);
+  return (
+    <MenuButton label="Settings" icon={<Settings {...ICON} />}>
+      {(close) => (
+        <>
+          <div className="menu-label t-caption">Open in editor</div>
+          {EDITORS.map((e) => (
+            <button
+              key={e.value}
+              type="button"
+              className="menu-item"
+              role="menuitemradio"
+              aria-checked={editor === e.value}
+              onClick={() => {
+                setEditor(e.value);
+                close();
+              }}
+            >
+              {e.label}
+              {editor === e.value && <Check size={16} strokeWidth={1.5} className="menu-check" aria-hidden="true" />}
+            </button>
+          ))}
+        </>
+      )}
+    </MenuButton>
+  );
+}
+
+/** Ghost icon button that opens a dropdown menu below itself; Esc or an outside click closes it. */
+function MenuButton({
+  label,
+  icon,
+  children,
+}: { label: string; icon: ReactNode; children: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -95,7 +189,7 @@ function ExportMenu({ repoId }: { repoId: string }) {
   return (
     <div ref={ref} style={{ display: 'contents' }}>
       <IconButton
-        label="Export"
+        label={label}
         pressed={open}
         onClick={() => {
           const r = ref.current?.querySelector('button')?.getBoundingClientRect();
@@ -103,28 +197,11 @@ function ExportMenu({ repoId }: { repoId: string }) {
           setOpen(!open);
         }}
       >
-        <Download {...ICON} />
+        {icon}
       </IconButton>
       {open && (
         <div className="menu" role="menu" style={{ left: pos.x, top: pos.y }}>
-          <a
-            className="menu-item"
-            role="menuitem"
-            href={api.exportUrl(repoId, 'json')}
-            download={`${repoId}.json`}
-            onClick={() => setOpen(false)}
-          >
-            Graph as JSON
-          </a>
-          <a
-            className="menu-item"
-            role="menuitem"
-            href={api.exportUrl(repoId, 'dot')}
-            download={`${repoId}.dot`}
-            onClick={() => setOpen(false)}
-          >
-            Graph as Graphviz DOT
-          </a>
+          {children(() => setOpen(false))}
         </div>
       )}
     </div>

@@ -51,3 +51,19 @@ exposes, depends_on, reads, writes, configures, member_of, dep_aggregate`. Struc
 to bind; `externalCalls` counts calls into libraries (head is an external import or an instance of one).
 
 Planned (see `IMPLEMENTATION_PLAN.md`): `GET /repos/:id/matrix` (C-16), `PATCH /repos/:id/subsystems/:sid` (C-11), `POST /repos/:id/ask` (Phase 5).
+
+## Repo events & watch mode
+
+| Method & path | Body / query | Response |
+|---|---|---|
+| `WS /repos/:id/events` | — | Stays open. Sends `RepoEvent` JSON `{ type: 'updated', repoId, analysedAt }` each time a (re-)analysis of the repo finishes — from `POST /repos`, `POST /repos/:id/reanalyze` or the watcher. Clients should refetch the repo's queries (keying caches on `analysedAt` is enough). Nothing is sent on connect. |
+
+`spider serve --watch` (`ServerOptions.watch`) watches every registered **local** repo (cloned URL
+sources are never watched) plus local repos analysed later through `POST /repos`. File changes are
+debounced (300 ms); a change during a running analysis queues exactly one follow-up run. Only
+directories that hold discovered files are watched, so `.gitignore`d trees (e.g. `node_modules`)
+cost nothing; editor swap files are ignored. Re-analysis reuses cached per-file facts, so only
+changed files are re-parsed: the job's `[parse]` log line reads `N reused, M re-extracted`.
+
+Analyses started by the server run on a worker thread (parse+extract on a further pool of up to 4
+threads), so the API stays responsive while analysing (fastify: `GET /health` max 9 ms).

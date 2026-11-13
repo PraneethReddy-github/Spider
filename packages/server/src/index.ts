@@ -5,10 +5,20 @@ import path from 'node:path';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import { QueryService, analyze, deleteRepo, listRepos, loadRepo, spiderHome, toDot, toGraphML } from '@spider/core';
+import {
+  QueryService,
+  analyzeInWorker,
+  deleteRepo,
+  listRepos,
+  loadRepo,
+  spiderHome,
+  toDot,
+  toGraphML,
+} from '@spider/core';
 import {
   type EdgeKind,
   type JobProgress,
+  type RepoEvent,
   type RepoInfo,
   diagnosticsQuerySchema,
   endpointsQuerySchema,
@@ -22,6 +32,7 @@ import {
   treeQuerySchema,
 } from '@spider/shared';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import { type RepoWatcher, createRepoWatcher } from './watch.js';
 
 export interface ServerOptions {
   port?: number;
@@ -30,6 +41,8 @@ export interface ServerOptions {
   /** Directory with the built web app (index.html). */
   webDir?: string;
   logger?: boolean;
+  /** Re-analyse registered local repos when their files change (`spider serve --watch`). */
+  watch?: boolean;
 }
 
 const jobs = new Map<string, JobProgress>();
@@ -41,6 +54,8 @@ function publish(job: JobProgress) {
   for (const listener of jobListeners.get(job.jobId) ?? []) listener(job);
   if (isFinal(job)) jobListeners.delete(job.jobId);
 }
+/** `WS /repos/:id/events` subscribers per repo id; told when a re-analysis lands. */
+const repoListeners = new Map<string, Set<(msg: RepoEvent) => void>>();
 const services = new Map<string, Promise<{ q: QueryService; info: RepoInfo }>>();
 
 async function getService(repoId: string, home?: string) {
@@ -81,19 +96,19 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   await app.register(cors, { origin: true });
   await app.register(websocket);
   const home = opts.home;
+  let watcher: RepoWatcher | undefined;
 
   app.get('/api/v1/health', async () => ({ ok: true }));
 
   /* ---------- repos & jobs ---------- */
   app.get('/api/v1/repos', async () => listRepos(home));
 
-  app.post<{ Body: { source: string; ref?: string; name?: string } }>('/api/v1/repos', async (req, reply) => {
-    const { source, ref, name } = req.body ?? {};
-    if (!source) return reply.code(400).send({ error: 'source is required' });
+  /** Starts an analysis job (on a worker thread, so this event loop keeps serving) and returns it. */
+  const startJob = (source: string, ref?: string, name?: string) => {
     const jobId = randomUUID();
     const job: JobProgress = { jobId, status: 'queued', stage: 'ingest', current: 0, total: 0, log: [] };
     jobs.set(jobId, job);
-    void analyze({
+    const done = analyzeInWorker({
       source,
       ref,
       name,
@@ -114,13 +129,25 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
         job.repoId = info.repoId;
         services.delete(info.repoId);
         publish(job);
+        const event: RepoEvent = { type: 'updated', repoId: info.repoId, analysedAt: info.analysedAt };
+        for (const listener of repoListeners.get(info.repoId) ?? []) listener(event);
+        return info;
       })
       .catch((err) => {
         job.status = 'failed';
         job.error = String(err?.message ?? err);
         publish(job);
+        return undefined;
       });
-    return { jobId };
+    return { job, done };
+  };
+
+  app.post<{ Body: { source: string; ref?: string; name?: string } }>('/api/v1/repos', async (req, reply) => {
+    const { source, ref, name } = req.body ?? {};
+    if (!source) return reply.code(400).send({ error: 'source is required' });
+    const { job, done } = startJob(source, ref, name);
+    if (watcher) void done.then((info) => info && watcher?.add(info));
+    return { jobId: job.jobId };
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/jobs/:id', async (req, reply) => {
@@ -149,6 +176,16 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     socket.on('close', () => jobListeners.get(job.jobId)?.delete(send));
   });
 
+  // Sends `{type:'updated', repoId, analysedAt}` whenever a (re-)analysis of the repo lands; stays open.
+  app.get<{ Params: { id: string } }>('/api/v1/repos/:id/events', { websocket: true }, (socket, req) => {
+    const id = req.params.id;
+    const send = (e: RepoEvent) => socket.send(JSON.stringify(e));
+    let set = repoListeners.get(id);
+    if (!set) repoListeners.set(id, (set = new Set()));
+    set.add(send);
+    socket.on('close', () => repoListeners.get(id)?.delete(send));
+  });
+
   app.get<{ Params: { id: string } }>('/api/v1/repos/:id', async (req, reply) => {
     try {
       const { info } = await getService(req.params.id, home);
@@ -160,6 +197,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
 
   app.delete<{ Params: { id: string } }>('/api/v1/repos/:id', async (req) => {
     services.delete(req.params.id);
+    watcher?.remove(req.params.id);
     await deleteRepo(req.params.id, home);
     return { ok: true };
   });
@@ -286,6 +324,13 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
       return reply.sendFile('index.html');
     });
+  }
+
+  if (opts.watch) {
+    const w = createRepoWatcher((info) => startJob(info.source, undefined, info.name).done);
+    watcher = w;
+    for (const info of await listRepos(home)) await w.add(info);
+    app.addHook('onClose', async () => w.close());
   }
 
   return app;

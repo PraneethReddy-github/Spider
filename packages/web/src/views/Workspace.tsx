@@ -1,6 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { api } from '../api';
+import { useRepo } from '../hooks';
 import { ContextMenu } from '../panels/ContextMenu';
 import { Details } from '../panels/Details';
 import { Explorer } from '../panels/Explorer';
@@ -16,7 +15,7 @@ import { FocusView } from './FocusView';
 import { MapView } from './MapView';
 
 export function Workspace({ repoId }: { repoId: string }) {
-  const repo = useQuery({ queryKey: ['repo', repoId], queryFn: () => api.repo(repoId), retry: false });
+  const repo = useRepo(repoId);
   const view = useStore((s) => s.view);
   const panels = useStore((s) => s.panels);
   const pathMode = useStore((s) => s.pathMode);

@@ -23,6 +23,8 @@ export interface DeclFact {
   extends?: string[];
   implements?: string[];
   decorators?: string[];
+  /** Raw annotated return type, unwrapped from `Promise<…>`/`Optional[…]` (receiver typing). */
+  returns?: string;
   complexity?: number;
   loc: number;
   docstring?: string;
@@ -67,6 +69,43 @@ export interface EndpointFact {
   handlerRef?: string;
   /** qname of the enclosing declaration (for decorators, the decorated function/method). */
   enclosingQname?: string;
+  /** Router variable (or controller class qname) the route is registered on, e.g. `router`, `bp`. */
+  receiver?: string;
+  /** File-local prefix of the receiver already joined into `path` (stripped when a mount replaces it). */
+  receiverPrefix?: string;
+  span: Span;
+}
+
+/** A router / blueprint / module mounted under a path prefix (resolved across files in resolve). */
+export interface MountFact {
+  /** Path prefix the target is mounted at (may be empty). */
+  prefix: string;
+  /** Dotted reference to the mounted router variable / module class, or a dotted module path. */
+  target: string;
+  /** Receiver the mount is made on (`app`, `router`, `urlpatterns`, module class qname). */
+  parent?: string;
+  /** `target` is a dotted module path string (Django `include('app.urls')`). */
+  targetIsModule?: boolean;
+  /** A non-empty prefix replaces the target's own prefix (Flask `register_blueprint(url_prefix=)`). */
+  replacesOwnPrefix?: boolean;
+  /** Applies to every endpoint of `framework` (NestJS `setGlobalPrefix`). */
+  global?: boolean;
+  framework?: string;
+  span: Span;
+}
+
+/** A router variable or controller class with its own file-local prefix. */
+export interface RouterFact {
+  /** Module-level variable name or class qname. */
+  name: string;
+  prefix: string;
+}
+
+/** A name used as a type annotation, generic argument or decorator (→ `references` edge). */
+export interface ReferenceFact {
+  name: string;
+  /** qname of the referencing declaration; undefined at module level. */
+  scopeQname?: string;
   span: Span;
 }
 
@@ -78,6 +117,8 @@ export interface BindingFact {
   /** Dotted reference of the constructor / factory. */
   ref: string;
   isNew: boolean;
+  /** `ref` is a type annotation (parameter, field, variable), not a constructor call. */
+  isType?: boolean;
 }
 
 export interface FileFacts {
@@ -90,6 +131,9 @@ export interface FileFacts {
   calls: CallFact[];
   endpoints: EndpointFact[];
   bindings: BindingFact[];
+  references?: ReferenceFact[];
+  mounts?: MountFact[];
+  routers?: RouterFact[];
   /** Language-specific hints: e.g. python `__all__`. */
   hints: Record<string, unknown>;
 }

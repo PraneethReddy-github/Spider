@@ -1,7 +1,7 @@
 import type { ViewLevel } from '@spider/shared';
-import { type FlowQuery, type State, type ViewMode, useStore } from './store';
+import { type FlowQuery, type ViewMode, type ViewSnapshot, useStore } from './store';
 
-type UrlState = Pick<State, 'level' | 'expanded' | 'selected' | 'view' | 'flowQuery'>;
+type UrlState = ViewSnapshot;
 
 const VIEWS: ViewMode[] = ['map', 'focus', 'flow'];
 const LEVELS: ViewLevel[] = ['L0', 'L1', 'L2', 'L3'];

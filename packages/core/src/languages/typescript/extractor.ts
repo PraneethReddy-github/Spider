@@ -9,6 +9,7 @@ import {
   type FileFacts,
   type ImportFact,
   type LanguageExtractor,
+  type MountFact,
   complexityOf,
   countLoc,
   dottedText,
@@ -17,6 +18,9 @@ import {
 
 const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'all', 'use', 'route', 'ws']);
 const NEST_METHOD_DECORATORS = new Set(['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head', 'All']);
+/** Wrapper generics unwrapped when typing a receiver from an annotation. */
+const WRAPPER_TYPES = new Set(['Promise', 'PromiseLike', 'Readonly', 'Awaited', 'NonNullable', 'Required']);
+const TYPE_REF_NODES = new Set(['type_identifier', 'nested_type_identifier']);
 const FUNCTION_TYPES = new Set([
   'function_declaration',
   'generator_function_declaration',
@@ -56,7 +60,11 @@ export class TypeScriptExtractor implements LanguageExtractor {
 
 class Walker {
   private controllerPrefix: string | undefined;
+  private controllerClass: string | undefined;
   private anonCounter = 0;
+  /** Router variable → its own prefix (Koa `new Router({ prefix })`, Hono `.basePath()`). */
+  private routerPrefixes = new Map<string, string>();
+  private seenRefs = new Set<string>();
 
   constructor(
     private facts: FileFacts,
@@ -102,6 +110,8 @@ class Walker {
             loc: n.endPosition.row - n.startPosition.row + 1,
           });
           if (exported) this.facts.exports.push({ name, span: spanOf(n, this.ctx.path) });
+          this.typeRefs(field(n, 'value'), this.q(scope, name));
+          this.typeRefs(field(n, 'type_parameters'), this.q(scope, name));
         }
         return;
       }
@@ -119,7 +129,21 @@ class Walker {
         const name = field(n, 'name')?.text;
         if (value && name && FUNCTION_TYPES.has(value.type)) {
           this.functionLike(value, name, scope, false, 'method', n, classQname);
-        } else if (value) this.visit(value, scope, false, classQname);
+          return;
+        }
+        const type = field(n, 'type');
+        const typeName = typeNameOf(type);
+        if (classQname && name && typeName)
+          this.facts.bindings.push({
+            name: `this.${name}`,
+            scopeQname: classQname,
+            ref: typeName,
+            isNew: true,
+            isType: true,
+          });
+        this.typeRefs(type, scope.qname);
+        this.decoratorRefs(n, scope.qname);
+        if (value) this.visit(value, scope, false, classQname);
         return;
       }
       case 'call_expression':
@@ -149,6 +173,28 @@ class Walker {
       }
       case 'decorator':
         return; // handled by parents
+      case 'type_identifier':
+      case 'nested_type_identifier':
+        this.ref(n, scope.qname);
+        return;
+      case 'assignment_expression': {
+        // this.x = new X() → field typing for `this.x.method()`
+        const left = field(n, 'left');
+        const right = field(n, 'right');
+        if (classQname && left?.type === 'member_expression' && field(left, 'object')?.type === 'this') {
+          const ctor = right?.type === 'new_expression' ? field(right, 'constructor') : null;
+          const prop = field(left, 'property')?.text;
+          if (ctor && prop)
+            this.facts.bindings.push({
+              name: `this.${prop}`,
+              scopeQname: classQname,
+              ref: dottedText(ctor),
+              isNew: true,
+            });
+        }
+        this.visitChildren(n, scope, false, classQname);
+        return;
+      }
       default:
         this.visitChildren(n, scope, exported && n.type === 'export_statement', classQname);
     }
@@ -223,7 +269,7 @@ class Walker {
       // `export default expr` with a non-declaration value (e.g. object literal)
       const value = n.namedChildren.find((c) => c.type !== 'decorator');
       if (value) {
-        this.facts.exports.push({ name: 'default', span });
+        this.facts.exports.push({ name: 'default', local: value.type === 'identifier' ? value.text : undefined, span });
         this.visit(value, scope, false, classQname);
       }
     }
@@ -277,23 +323,45 @@ class Walker {
           for (const v of h.namedChildren) if (v.type !== 'type_arguments') decl.extends!.push(dottedText(v));
         if (h.type === 'implements_clause')
           for (const v of h.namedChildren) decl.implements!.push(dottedText(v).replace(/<.*$/, ''));
+        // generic arguments in heritage clauses (`extends Repo<User>`) are references
+        for (const v of h.namedChildren) this.typeRefs(field(v, 'type_arguments'), qname);
+        for (const v of h.namedChildren) if (v.type === 'type_arguments') this.typeRefs(v, qname);
       }
     }
+    this.typeRefs(field(n, 'type_parameters'), qname);
+    const savedPrefix = this.controllerPrefix;
+    const savedController = this.controllerClass;
     for (const d of this.decoratorsOf(n)) {
       const { name: dn, args } = this.decoratorName(d);
       decl.decorators!.push(dn);
+      this.decoratorRef(d, qname);
+      const arg0 = args?.namedChildren[0];
       if (dn === 'Controller') {
-        const prefix = stringValue(args?.namedChildren[0]) ?? '';
+        const prefix = (arg0?.type === 'object' ? stringValue(objectProp(arg0, 'path')) : stringValue(arg0)) ?? '';
         this.controllerPrefix = prefix;
+        this.controllerClass = qname;
+        (this.facts.routers ??= []).push({ name: qname, prefix: prefix ? joinPath(prefix, '') : '' });
+      }
+      // @Module({ controllers: [A, B] }) → controllers are mounted under the module (NestJS RouterModule)
+      if (dn === 'Module' && arg0?.type === 'object') {
+        const list = objectProp(arg0, 'controllers');
+        for (const c of list?.type === 'array' ? list.namedChildren : [])
+          if (c.type === 'identifier' || c.type === 'member_expression')
+            this.mount({ prefix: '', target: dottedText(c), parent: qname, span: spanOf(c, this.ctx.path) });
+        // imports: [RouterModule.register([...])] — decorator arguments are not walked for calls
+        const imps = objectProp(arg0, 'imports');
+        for (const c of imps?.type === 'array' ? imps.namedChildren : [])
+          if (c.type === 'call_expression' && field(c, 'function')?.text === 'RouterModule.register')
+            this.nestRoutes(field(c, 'arguments')?.namedChildren[0], undefined);
       }
     }
     this.facts.decls.push(decl);
     if (exported)
       this.facts.exports.push({ name: forcedName === 'default' ? 'default' : name, local: name, span: decl.span });
     const body = field(n, 'body');
-    const savedPrefix = this.controllerPrefix;
     if (body) this.visitChildren(body, { qname }, false, qname);
     this.controllerPrefix = savedPrefix;
+    this.controllerClass = savedController;
   }
 
   private interfaceDecl(n: SyntaxNode, scope: Scope, exported: boolean): void {
@@ -312,6 +380,9 @@ class Walker {
     };
     const ext = n.namedChildren.find((c) => c.type === 'extends_type_clause');
     if (ext) for (const v of ext.namedChildren) decl.extends!.push(dottedText(v).replace(/<.*$/, ''));
+    if (ext) for (const v of ext.namedChildren) this.typeRefs(field(v, 'type_arguments'), decl.qname);
+    this.typeRefs(field(n, 'type_parameters'), decl.qname);
+    this.typeRefs(field(n, 'body'), decl.qname);
     this.facts.decls.push(decl);
     if (exported) this.facts.exports.push({ name, span: decl.span });
   }
@@ -359,9 +430,15 @@ class Walker {
     };
     const accessibility = declNode.namedChildren.find((c) => c.type === 'accessibility_modifier');
     if (accessibility) decl.visibility = accessibility.text as DeclFact['visibility'];
+    this.paramTyping(params, qname, kind === 'method' && name === 'constructor' ? classQname : undefined);
+    const returnType = field(fn, 'return_type');
+    decl.returns = typeNameOf(returnType);
+    this.typeRefs(returnType, qname);
+    this.typeRefs(field(fn, 'type_parameters'), qname);
     for (const d of this.decoratorsOf(declNode)) {
       const { name: dn, args } = this.decoratorName(d);
       decl.decorators!.push(dn);
+      this.decoratorRef(d, qname);
       if (NEST_METHOD_DECORATORS.has(dn)) {
         const sub = stringValue(args?.namedChildren[0]) ?? '';
         const p = joinPath(this.controllerPrefix ?? '', sub);
@@ -371,6 +448,8 @@ class Walker {
           framework: 'nestjs',
           handlerRef: qname,
           enclosingQname: qname,
+          receiver: this.controllerClass,
+          receiverPrefix: this.controllerPrefix ? joinPath(this.controllerPrefix, '') : undefined,
           span: spanOf(d, this.ctx.path),
         });
       }
@@ -390,6 +469,16 @@ class Walker {
       if (nameNode.type === 'identifier' && value && FUNCTION_TYPES.has(value.type)) {
         this.functionLike(value, nameNode.text, scope, exported, 'function', d, classQname);
         continue;
+      }
+      const type = field(d, 'type');
+      this.typeRefs(type, scope.qname ?? (nameNode.type === 'identifier' ? nameNode.text : undefined));
+      if (nameNode.type === 'identifier' && value) this.routerPrefix(nameNode.text, value);
+      // Next.js middleware `export const config = { matcher: '/x' | ['/a', '/b'] }`
+      if (!scope.qname && nameNode.text === 'config' && value?.type === 'object') {
+        const m = objectProp(value, 'matcher');
+        const list = m?.type === 'array' ? m.namedChildren.map((x) => stringValue(x)) : [stringValue(m)];
+        const matchers = list.filter((x): x is string => x !== undefined);
+        if (matchers.length) this.facts.hints.nextMatcher = matchers;
       }
       if (nameNode.type === 'identifier' && value) {
         let v = value;
@@ -414,6 +503,16 @@ class Walker {
             });
         }
       }
+      // `const x: Foo = …` — the annotation wins over the initialiser
+      const typeName = nameNode.type === 'identifier' ? typeNameOf(type) : undefined;
+      if (typeName)
+        this.facts.bindings.push({
+          name: nameNode.text,
+          scopeQname: scope.qname,
+          ref: typeName,
+          isNew: true,
+          isType: true,
+        });
       // require() import
       if (value?.type === 'call_expression' && field(value, 'function')?.text === 'require') {
         const spec = stringValue(field(value, 'arguments')?.namedChildren[0]);
@@ -476,9 +575,36 @@ class Walker {
     // Express/Fastify/Koa/Hono style routes: x.get('/path', ...handlers)
     if (fnNode.type === 'member_expression' && args) {
       const prop = field(fnNode, 'property')?.text ?? '';
+      const objNode = field(fnNode, 'object');
+      const receiver = objNode?.type === 'identifier' ? objNode.text : undefined;
+      if (prop === 'setGlobalPrefix') {
+        const gp = stringValue(args.namedChildren[0]);
+        if (gp !== undefined) this.mount({ prefix: gp, target: '', global: true, framework: 'nestjs', span });
+      }
+      if (prop === 'register' && objNode?.text === 'RouterModule') this.nestRoutes(args.namedChildren[0], undefined);
+      if (prop === 'prefix' && receiver && this.ctx.frameworks.has('koa')) {
+        const kp = stringValue(args.namedChildren[0]);
+        if (kp !== undefined) this.setRouterPrefix(receiver, kp);
+      }
       if (HTTP_METHODS.has(prop)) {
-        const first = args.namedChildren[0];
-        const p = stringValue(first);
+        let first = args.namedChildren[0];
+        let p = stringValue(first);
+        // koa-router named routes: router.get('name', '/path', handler)
+        const second = args.namedChildren[1];
+        const p2 = second ? stringValue(second) : undefined;
+        if (p !== undefined && !p.startsWith('/') && p2?.startsWith('/') && this.ctx.frameworks.has('koa')) {
+          first = second;
+          p = p2;
+        }
+        // mounts: app.route('/x', sub) (Hono) · router.use('/x', sub.routes()) (Koa) · app.use('/x', router)
+        if (p !== undefined && (prop === 'route' || prop === 'use') && args.namedChildren.length >= 2) {
+          const t = mountTarget(
+            prop === 'route' ? args.namedChildren[1] : args.namedChildren[args.namedChildren.length - 1],
+          );
+          const koaT = mountTarget(args.namedChildren[1]);
+          const target = prop === 'use' && koaT && args.namedChildren[1]?.type === 'call_expression' ? koaT : t;
+          if (target) this.mount({ prefix: p, target, parent: receiver, span });
+        }
         if (p !== undefined && (p.startsWith('/') || p === '*' || p.startsWith('http'))) {
           const last = args.namedChildren[args.namedChildren.length - 1];
           let handlerRef: string | undefined;
@@ -492,12 +618,15 @@ class Walker {
           }
           const method = prop === 'use' ? 'USE' : prop === 'all' || prop === 'route' ? 'ANY' : prop.toUpperCase();
           if (prop !== 'use' || argCount > 1) {
+            const own = receiver ? this.routerPrefixes.get(receiver) : undefined;
             this.facts.endpoints.push({
               method,
-              path: p,
+              path: own ? joinUrl(own, p) : p,
               framework: this.guessFramework(),
               handlerRef,
               enclosingQname: scope.qname,
+              receiver,
+              receiverPrefix: own,
               span,
             });
           }
@@ -531,6 +660,121 @@ class Walker {
     }
   }
 
+  private ref(n: SyntaxNode, scopeQname: string | undefined): void {
+    const name = dottedText(n);
+    const key = `${scopeQname ?? ''}\0${name}`;
+    if (this.seenRefs.has(key)) return;
+    this.seenRefs.add(key);
+    (this.facts.references ??= []).push({ name, scopeQname, span: spanOf(n, this.ctx.path) });
+  }
+
+  /** All type names used inside a type subtree (annotations, generics, alias bodies, interface bodies). */
+  private typeRefs(n: SyntaxNode | null | undefined, scopeQname: string | undefined): void {
+    if (!n) return;
+    if (TYPE_REF_NODES.has(n.type)) {
+      this.ref(n, scopeQname);
+      return;
+    }
+    for (const c of n.namedChildren) this.typeRefs(c, scopeQname);
+  }
+
+  /** `@Deco(arg)` → references to `Deco` and to identifier arguments (`@UseGuards(AuthGuard)`). */
+  private decoratorRef(d: SyntaxNode, scopeQname: string): void {
+    const inner = d.namedChildren[0];
+    if (!inner) return;
+    const head = inner.type === 'call_expression' ? field(inner, 'function') : inner;
+    if (head && (head.type === 'identifier' || head.type === 'member_expression')) this.ref(head, scopeQname);
+    const args = inner.type === 'call_expression' ? field(inner, 'arguments') : null;
+    for (const a of args?.namedChildren ?? []) if (a.type === 'identifier') this.ref(a, scopeQname);
+  }
+
+  private decoratorRefs(n: SyntaxNode, scopeQname: string | undefined): void {
+    if (!scopeQname) return;
+    for (const d of this.decoratorsOf(n)) this.decoratorRef(d, scopeQname);
+  }
+
+  /** `param: Type` → binding (receiver typing); constructor parameter properties → `this.param`. */
+  private paramTyping(params: SyntaxNode | null, qname: string, ctorClass: string | undefined): void {
+    for (const p of params?.namedChildren ?? []) {
+      const pattern = field(p, 'pattern');
+      const type = field(p, 'type');
+      this.typeRefs(type, qname);
+      this.decoratorRefs(p, qname);
+      const typeName = typeNameOf(type);
+      if (pattern?.type !== 'identifier' || !typeName) continue;
+      this.facts.bindings.push({ name: pattern.text, scopeQname: qname, ref: typeName, isNew: true, isType: true });
+      const isProperty = p.namedChildren.some((c) => c.type === 'accessibility_modifier' || c.text === 'readonly');
+      if (ctorClass && isProperty)
+        this.facts.bindings.push({
+          name: `this.${pattern.text}`,
+          scopeQname: ctorClass,
+          ref: typeName,
+          isNew: true,
+          isType: true,
+        });
+    }
+  }
+
+  private setRouterPrefix(name: string, prefix: string): void {
+    this.routerPrefixes.set(name, prefix);
+    (this.facts.routers ??= []).push({ name, prefix });
+  }
+
+  /** `new Router({ prefix: '/x' })` (Koa) and `new Hono().basePath('/x')` / `x.basePath('/x')`. */
+  private routerPrefix(name: string, value: SyntaxNode): void {
+    if (value.type === 'new_expression') {
+      const arg = field(value, 'arguments')?.namedChildren[0];
+      const ctor = field(value, 'constructor')?.text ?? '';
+      if (/Router$/.test(ctor) && arg?.type === 'object') {
+        const prefix = stringValue(objectProp(arg, 'prefix'));
+        if (prefix !== undefined) this.setRouterPrefix(name, prefix);
+      }
+      return;
+    }
+    const fn = value.type === 'call_expression' ? field(value, 'function') : null;
+    if (fn?.type === 'member_expression' && field(fn, 'property')?.text === 'basePath') {
+      const prefix = stringValue(field(value, 'arguments')?.namedChildren[0]);
+      if (prefix !== undefined) this.setRouterPrefix(name, prefix);
+    }
+  }
+
+  private mount(m: MountFact): void {
+    (this.facts.mounts ??= []).push(m);
+  }
+
+  /** NestJS `RouterModule.register([{ path, module, children }])`, children nested under their parent. */
+  private nestRoutes(list: SyntaxNode | undefined, parent: string | undefined): void {
+    for (const o of list?.type === 'array' ? list.namedChildren : []) {
+      if (o.type !== 'object') continue;
+      const path = stringValue(objectProp(o, 'path')) ?? '';
+      const mod = objectProp(o, 'module');
+      const modRef =
+        mod && (mod.type === 'identifier' || mod.type === 'member_expression') ? dottedText(mod) : undefined;
+      if (modRef) this.mount({ prefix: path, target: modRef, parent, span: spanOf(o, this.ctx.path) });
+      // shortcut: a child entry without its own `module` loses its path segment; follow up if seen in the wild
+      this.nestRoutes(objectProp(o, 'children'), modRef ?? parent);
+    }
+  }
+
+  /** Next.js `middleware.ts` / `proxy.ts` at the app root: one `USE` endpoint per `config.matcher`. */
+  private nextMiddleware(): void {
+    const p = this.ctx.path;
+    if (!this.ctx.frameworks.has('nextjs') || !/(^|\/)(src\/)?(middleware|proxy)\.[cm]?[jt]s$/.test(p)) return;
+    if (/(^|\/)node_modules\//.test(p)) return;
+    const fnName = ['middleware', 'proxy', 'default'].find((n) => this.facts.exports.some((e) => e.name === n));
+    if (!fnName) return;
+    const ex = this.facts.exports.find((e) => e.name === fnName)!;
+    const matchers = (this.facts.hints.nextMatcher as string[] | undefined) ?? ['/*'];
+    for (const m of matchers)
+      this.facts.endpoints.push({
+        method: 'USE',
+        path: m,
+        framework: 'nextjs',
+        handlerRef: ex.local ?? ex.name,
+        span: ex.span,
+      });
+  }
+
   private guessFramework(): string {
     for (const f of ['fastify', 'express', 'koa', 'hono', 'hapi']) if (this.ctx.frameworks.has(f)) return f;
     return 'http';
@@ -539,6 +783,7 @@ class Walker {
   /** Next.js style file routes: pages/api/... and app/.../route.ts */
   detectFileRoutes(): void {
     const p = this.ctx.path;
+    this.nextMiddleware();
     const m1 = /(^|\/)pages\/api\/(.+)\.[cm]?[jt]sx?$/.exec(p);
     if (m1) {
       const route = `/api/${m1[2]
@@ -573,6 +818,61 @@ class Walker {
       }
     }
   }
+}
+
+/** The class-like name of a type annotation for receiver typing; undefined for unions, arrays, literals. */
+function typeNameOf(n: SyntaxNode | null | undefined): string | undefined {
+  if (!n) return undefined;
+  if (n.type === 'type_annotation' || n.type === 'parenthesized_type') return typeNameOf(n.namedChildren[0]);
+  if (n.type === 'type_identifier' || n.type === 'nested_type_identifier') return dottedText(n);
+  if (n.type === 'generic_type') {
+    const name = field(n, 'name');
+    if (name && WRAPPER_TYPES.has(name.text)) return typeNameOf(field(n, 'type_arguments')?.namedChildren[0]);
+    return name ? dottedText(name) : undefined;
+  }
+  if (n.type === 'union_type') {
+    // `X | null | undefined` → X; any other union is ambiguous
+    const parts: SyntaxNode[] = [];
+    const flat = (u: SyntaxNode) => {
+      for (const c of u.namedChildren) c.type === 'union_type' ? flat(c) : parts.push(c);
+    };
+    flat(n);
+    const real = parts.filter((c) => !/^(null|undefined|void)$/.test(c.text));
+    return real.length === 1 ? typeNameOf(real[0]) : undefined;
+  }
+  return undefined;
+}
+
+function objectProp(obj: SyntaxNode, key: string): SyntaxNode | undefined {
+  for (const pair of obj.namedChildren) {
+    const k = pair.type === 'pair' ? field(pair, 'key') : null;
+    if (k && (stringValue(k) ?? k.text) === key) return field(pair, 'value') ?? undefined;
+  }
+  return undefined;
+}
+
+/** Mounted router reference: `sub`, `routes.sub`, or `sub.routes()` / `sub.middleware()` (Koa). */
+function mountTarget(n: SyntaxNode | undefined): string | undefined {
+  if (!n) return undefined;
+  if (n.type === 'identifier' || n.type === 'member_expression') return dottedText(n);
+  if (n.type === 'call_expression') {
+    const fn = field(n, 'function');
+    const prop = fn?.type === 'member_expression' ? field(fn, 'property')?.text : undefined;
+    const obj = fn?.type === 'member_expression' ? field(fn, 'object') : null;
+    if (
+      (prop === 'routes' || prop === 'middleware') &&
+      obj &&
+      (obj.type === 'identifier' || obj.type === 'member_expression')
+    )
+      return dottedText(obj);
+  }
+  return undefined;
+}
+
+function joinUrl(a: string, b: string): string {
+  if (!a) return b;
+  if (!b || b === '/') return a; // koa-router / Hono: `/` under a prefix is the bare prefix
+  return `${a.replace(/\/+$/, '')}/${b.replace(/^\/+/, '')}`;
 }
 
 function joinPath(a: string, b: string): string {

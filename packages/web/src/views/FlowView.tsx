@@ -8,6 +8,7 @@ import { fmtNum, nodeLabel } from '../format';
 import { GraphCanvas } from '../graph/GraphCanvas';
 import { animatePositions, dropTests, encodeGraph } from '../graph/encode';
 import { useMarks, useNodeDetail, useReveal } from '../hooks';
+import { elkLayered } from '../layout/elk';
 import { layeredLayout } from '../layout/views';
 import { type FlowQuery, useStore } from '../store';
 import { EmptyState, Stepper } from '../ui';
@@ -39,7 +40,7 @@ const VERB: Record<FlowQuery['type'], string> = {
   path: 'Path',
 };
 
-/** Columns by distance: downstream/trace read left → right from the root, upstream right → left. */
+/** Layered flow (ELK): downstream/trace/path read left → right from the root, upstream right → left. */
 export function FlowView({ repoId }: { repoId: string }) {
   const graph = useMemo(() => new Graph({ multi: true, type: 'directed' }), []);
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -76,10 +77,31 @@ export function FlowView({ repoId }: { repoId: string }) {
       marks,
       pathEdges,
     });
-    const pos = layeredLayout(enc.nodes, enc.edges, data.distances ?? {}, q.type === 'upstream');
-    const cancel = animatePositions(graph, pos, 0);
+    // columns-by-distance right away; ELK's layered layout replaces it when the worker answers
+    const upstream = q.type === 'upstream';
+    let cancel = animatePositions(graph, layeredLayout(enc.nodes, enc.edges, data.distances ?? {}, upstream), 0);
     setLayoutVersion((v) => v + 1);
-    return cancel;
+    let live = true;
+    elkLayered(
+      enc.nodes.map((n) => ({
+        id: n.id,
+        size: graph.getNodeAttribute(n.id, 'size') ?? 6,
+      })),
+      enc.edges,
+      upstream,
+    )
+      .then((pos) => {
+        if (!live) return;
+        cancel = animatePositions(graph, pos, 300);
+        setLayoutVersion((v) => v + 1);
+      })
+      .catch(() => {
+        /* no worker (or ELK failed): keep the column layout */
+      });
+    return () => {
+      live = false;
+      cancel();
+    };
   }, [graph, data, q, s.theme, s.hidden, s.filters.hideAmbiguous, marks]);
 
   if (!q)

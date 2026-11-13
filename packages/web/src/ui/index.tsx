@@ -142,12 +142,14 @@ export function IconButton({
   children,
   pressed,
   shortcut,
+  disabled,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
   pressed?: boolean;
   shortcut?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -156,6 +158,7 @@ export function IconButton({
       aria-label={label}
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-pressed={pressed}
+      disabled={disabled}
       onClick={onClick}
     >
       {children}

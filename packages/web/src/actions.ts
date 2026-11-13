@@ -45,6 +45,10 @@ export const actions = {
   hide(id: string) {
     useStore.getState().hide(id);
   },
+  /** Hands an editor deep link to the OS (the browser asks before launching the app). */
+  openInEditor(url: string) {
+    window.location.assign(url);
+  },
   async copyId(id: string) {
     try {
       await navigator.clipboard.writeText(id);

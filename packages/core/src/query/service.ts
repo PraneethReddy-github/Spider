@@ -9,6 +9,7 @@ import type {
   ProjectionRequest,
   SearchHit,
   SubGraph,
+  TraceResult,
 } from '@spider/shared';
 import type { GraphBuilder } from '../graph/builder.js';
 
@@ -430,9 +431,62 @@ export class QueryService {
       });
   }
 
-  /** Follows exposes → calls/instantiates from an endpoint to build its execution flow. */
-  trace(id: string, depth = 6) {
-    return this.neighborhood(id, 'out', depth, ['exposes', 'calls', 'instantiates']);
+  /**
+   * An endpoint's execution flow: exposes → calls/instantiates/reads/writes, breadth-first.
+   * Datastore and external nodes are included but never expanded (they are boundaries). Middleware
+   * (an `exposes` edge or target marked `props.middleware`) is listed in `props.order`/source order.
+   */
+  trace(id: string, depth = 6): TraceResult {
+    const kinds = new Set<EdgeKind>(['exposes', 'calls', 'instantiates', 'reads', 'writes']);
+    const empty: TraceResult = { nodes: [], edges: [], distances: {}, layers: [], middleware: [], boundaries: [] };
+    if (!this.g.getNode(id)) return empty;
+    const isBoundary = (n?: GraphNode) => n?.kind === 'datastore' || n?.kind === 'external';
+    const dist = new Map<string, number>([[id, 0]]);
+    const edges = new Map<string, GraphEdge>();
+    let frontier = [id];
+    for (let d = 1; d <= depth && frontier.length && dist.size <= 3000; d++) {
+      const next: string[] = [];
+      for (const cur of frontier) {
+        if (cur !== id && isBoundary(this.g.getNode(cur))) continue;
+        for (const e of this.relEdges(cur, 'out', kinds)) {
+          edges.set(e.id, e);
+          if (!dist.has(e.dst)) {
+            dist.set(e.dst, d);
+            next.push(e.dst);
+          }
+        }
+      }
+      frontier = next;
+    }
+    const nodes = [...dist.keys()].map((n) => this.g.getNode(n)).filter((n): n is GraphNode => !!n);
+    const ev = (e: GraphEdge) => e.props.evidence?.[0];
+    const order = (e: GraphEdge) =>
+      Number(
+        e.props.order ?? this.g.getNode(e.dst)?.props.order ?? (ev(e)?.startLine ?? 0) * 1e4 + (ev(e)?.startCol ?? 0),
+      );
+    const middleware = this.g
+      .outEdges(id, 'exposes')
+      .filter((e) => e.props.middleware || this.g.getNode(e.dst)?.props.middleware)
+      .sort((a, b) => order(a) - order(b))
+      .map((e) => e.dst);
+    const mwRank = new Map(middleware.map((m, i) => [m, i]));
+    const layers: string[][] = [];
+    for (const n of nodes) (layers[dist.get(n.id)!] ??= []).push(n.id);
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const key = (nid: string) => {
+      const n = byId.get(nid)!;
+      return `${mwRank.has(nid) ? `0${String(mwRank.get(nid)).padStart(4, '0')}` : '1'}${n.qname ?? n.name}`;
+    };
+    for (const l of layers) l.sort((a, b) => key(a).localeCompare(key(b)));
+    return {
+      nodes,
+      edges: [...edges.values()],
+      distances: Object.fromEntries(dist),
+      layers,
+      middleware,
+      boundaries: nodes.filter((n) => n.id !== id && isBoundary(n)).map((n) => n.id),
+      meta: { root: id, direction: 'out', depth },
+    };
   }
 
   diagnostics(type?: string): Diagnostic[] {

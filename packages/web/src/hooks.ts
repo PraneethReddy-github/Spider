@@ -1,7 +1,8 @@
-import type { Diagnostic } from '@spider/shared';
+import type { Diagnostic, GraphNode } from '@spider/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import { api } from './api';
+import { editorUrl } from './editor';
 import { type ViewMode, useStore } from './store';
 
 /** Ids currently drawn on the Map (kept outside React state; read on demand). */
@@ -72,4 +73,15 @@ export function useNodeDetail(repoId: string, id: string | undefined) {
     enabled: Boolean(id),
     staleTime: 60_000,
   });
+}
+
+export function useRepo(repoId: string) {
+  return useQuery({ queryKey: ['repo', repoId], queryFn: () => api.repo(repoId), retry: false });
+}
+
+/** "Open in editor" deep link for a node, per the user's editor setting (undefined = unavailable). */
+export function useEditorUrl(repoId: string, node: GraphNode | undefined): string | undefined {
+  const scheme = useStore((s) => s.editor);
+  const root = useRepo(repoId).data?.root;
+  return node ? editorUrl(scheme, root, node) : undefined;
 }

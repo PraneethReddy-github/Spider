@@ -91,8 +91,14 @@ program
     console.log(`Run ${pc.cyan('spider open')} to explore the map.`);
   });
 
-async function serve(opts: { port: string; host: string }) {
-  const { url } = await startServer({ port: Number(opts.port), host: opts.host, home: home() });
+interface ServeOpts {
+  port: string;
+  host: string;
+  watch?: boolean;
+}
+
+async function serve(opts: ServeOpts) {
+  const { url } = await startServer({ port: Number(opts.port), host: opts.host, home: home(), watch: opts.watch });
   const repos = await listRepos(home());
   console.log(`${pc.bold('Spider')} is running at ${pc.cyan(url)}`);
   console.log(
@@ -100,6 +106,7 @@ async function serve(opts: { port: string; host: string }) {
       ? `  ${num(repos.length)} analysed ${repos.length === 1 ? 'repository' : 'repositories'}: ${repos.map((r) => r.name).join(', ')}`
       : `  No repositories yet. Run ${pc.cyan('spider analyze <path|url>')} or use the web app.`,
   );
+  if (opts.watch) console.log('  Watching local repositories; changes are re-analysed automatically.');
   return url;
 }
 
@@ -120,15 +127,17 @@ program
   .command('serve')
   .option('-p, --port <port>', 'port', '4747')
   .option('--host <host>', 'host to bind', '127.0.0.1')
+  .option('-w, --watch', 're-analyse local repositories when their files change')
   .description('Start the Spider server and web app')
-  .action(async (opts: { port: string; host: string }) => void (await serve(opts)));
+  .action(async (opts: ServeOpts) => void (await serve(opts)));
 
 program
   .command('open')
   .option('-p, --port <port>', 'port', '4747')
   .option('--host <host>', 'host to bind', '127.0.0.1')
+  .option('-w, --watch', 're-analyse local repositories when their files change')
   .description('Start the Spider server and open the web app in a browser')
-  .action(async (opts: { port: string; host: string }) => openBrowser(await serve(opts)));
+  .action(async (opts: ServeOpts) => openBrowser(await serve(opts)));
 
 program
   .command('list')

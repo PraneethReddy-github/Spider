@@ -23,6 +23,16 @@ export function useShortcuts(): void {
         s.setSearchOpen(!s.searchOpen);
         return;
       }
+      // ⌘Z / ⇧⌘Z (Ctrl on other platforms; Ctrl+Y too) step through view history; inputs keep native undo
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !typing(e.target) && !s.searchOpen) {
+        const k = e.key.toLowerCase();
+        if (k === 'z' || k === 'y') {
+          e.preventDefault();
+          if (k === 'y' || e.shiftKey) s.redo();
+          else s.undo();
+          return;
+        }
+      }
       if (e.key === 'Escape') {
         if (s.searchOpen) s.setSearchOpen(false);
         else if (s.contextMenu) s.openContextMenu(undefined);

@@ -316,8 +316,10 @@ function findCycles(g: GraphBuilder, fg: Graph): Diagnostic[] {
 function findDeadCode(g: GraphBuilder): Diagnostic[] {
   const out: Diagnostic[] = [];
   for (const n of g.nodes.values()) {
-    if (n.kind !== 'function' && n.kind !== 'class') continue;
-    if (n.props.isTest || n.props.classKind === 'interface') continue;
+    // interfaces and type aliases count now that annotations produce `references` edges
+    if (n.kind !== 'function' && n.kind !== 'class' && n.kind !== 'type') continue;
+    if (n.props.isTest) continue;
+    if (n.file?.endsWith('.d.ts')) continue; // declaration files describe a public API for consumers
     const file = n.file ? g.getNode(ids.file(n.file)) : undefined;
     if (file?.props.isEntry || file?.props.isTest) continue;
     if (!n.props.isExported) continue;

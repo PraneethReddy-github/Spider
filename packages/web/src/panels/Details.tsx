@@ -1,11 +1,12 @@
 import type { EdgeKind, GraphEdge, GraphNode, NodeDetail } from '@spider/shared';
 import { useQuery } from '@tanstack/react-query';
-import { Copy } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { Copy, SquareArrowOutUpRight } from 'lucide-react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { actions } from '../actions';
 import { api } from '../api';
 import { fmtNum, locationOf, nodeLabel } from '../format';
-import { useNodeDetail, useReveal } from '../hooks';
+import { type Token, grammarFor, tokenize } from '../highlight';
+import { useEditorUrl, useNodeDetail, useReveal } from '../hooks';
 import { useStore } from '../store';
 import { EmptyState, IconButton, KindBadge, KindGlyph, Spinner, Tabs } from '../ui';
 
@@ -15,6 +16,7 @@ export function Details({ repoId }: { repoId: string }) {
   const selected = useStore((s) => s.selected);
   const [tab, setTab] = useState<Tab>('overview');
   const q = useNodeDetail(repoId, selected);
+  const editorHref = useEditorUrl(repoId, q.data?.node);
 
   if (!selected)
     return (
@@ -48,7 +50,12 @@ export function Details({ repoId }: { repoId: string }) {
           {n.props.classKind && n.props.classKind !== 'class' ? (
             <span className="badge">{String(n.props.classKind)}</span>
           ) : null}
-          <span style={{ marginLeft: 'auto' }}>
+          <span style={{ marginLeft: 'auto', display: 'flex' }}>
+            {editorHref && (
+              <IconButton label="Open in editor" onClick={() => actions.openInEditor(editorHref)}>
+                <SquareArrowOutUpRight size={16} strokeWidth={1.5} />
+              </IconButton>
+            )}
             <IconButton label="Copy id" onClick={() => void actions.copyId(n.id)}>
               <Copy size={16} strokeWidth={1.5} />
             </IconButton>
@@ -78,7 +85,11 @@ export function Details({ repoId }: { repoId: string }) {
         />
       )}
       <div className="side-scroll" style={{ padding: 0 }}>
-        {tab === 'overview' || !hasSource ? <Overview d={d} /> : <Source repoId={repoId} id={n.id} />}
+        {tab === 'overview' || !hasSource ? (
+          <Overview d={d} />
+        ) : (
+          <Source repoId={repoId} id={n.id} outgoing={d.outgoing} />
+        )}
       </div>
     </>
   );
@@ -260,8 +271,102 @@ function NodeList({ nodes, onPick }: { nodes: GraphNode[]; onPick: (id: string) 
   );
 }
 
-function Source({ repoId, id }: { repoId: string; id: string }) {
+/** A clickable call site: [from, to) columns on one source line, pointing at the edge's target. */
+interface Site {
+  from: number;
+  to: number;
+  target: GraphNode;
+  kind: EdgeKind;
+}
+
+/** Call/import sites from the evidence spans of the node's outgoing edges, keyed by line. */
+function sitesByLine(outgoing: NodeDetail['outgoing'], path: string, lines: string[], first: number) {
+  const out = new Map<number, Site[]>();
+  for (const { edge, node } of outgoing) {
+    for (const sp of edge.props.evidence ?? []) {
+      const text = lines[sp.startLine - first];
+      if (sp.file !== path || text === undefined) continue;
+      const end = sp.endLine === sp.startLine ? sp.endCol : text.length;
+      // underline the callee (`orders.get`), not its arguments
+      const paren = text.indexOf('(', sp.startCol);
+      const to = paren > sp.startCol && paren < end ? paren : end;
+      if (to <= sp.startCol) continue;
+      const list = out.get(sp.startLine) ?? [];
+      if (list.some((x) => x.from < to && sp.startCol < x.to)) continue; // first edge wins overlaps
+      list.push({ from: sp.startCol, to, target: node, kind: edge.kind });
+      out.set(sp.startLine, list);
+    }
+  }
+  for (const l of out.values()) l.sort((a, b) => a.from - b.from);
+  return out;
+}
+
+/** The tokens covering columns [from, to) of a line. */
+function sliceTokens(tokens: Token[], from: number, to: number): ReactNode[] {
+  const out: ReactNode[] = [];
+  let at = 0;
+  for (const t of tokens) {
+    const a = Math.max(from, at);
+    const b = Math.min(to, at + t.text.length);
+    if (a < b)
+      out.push(
+        <span key={a} className={`tok-${t.tone}`}>
+          {t.text.slice(a - at, b - at)}
+        </span>,
+      );
+    at += t.text.length;
+  }
+  return out;
+}
+
+function CodeText({
+  text,
+  tokens,
+  sites,
+  onPick,
+}: {
+  text: string;
+  tokens?: Token[];
+  sites?: Site[];
+  onPick: (id: string) => void;
+}) {
+  const toks = tokens ?? [{ text, tone: 1 as const }];
+  if (!sites?.length) return <span>{sliceTokens(toks, 0, text.length)}</span>;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const site of sites) {
+    parts.push(...sliceTokens(toks, at, site.from));
+    parts.push(
+      <button
+        key={`s${site.from}`}
+        type="button"
+        className="code-link"
+        title={`${site.kind.replace('_', ' ')} ${nodeLabel(site.target)}`}
+        onClick={() => onPick(site.target.id)}
+      >
+        {sliceTokens(toks, site.from, site.to)}
+      </button>,
+    );
+    at = site.to;
+  }
+  parts.push(...sliceTokens(toks, at, text.length));
+  return <span>{parts}</span>;
+}
+
+function Source({ repoId, id, outgoing }: { repoId: string; id: string; outgoing: NodeDetail['outgoing'] }) {
   const q = useQuery({ queryKey: ['source', repoId, id], queryFn: () => api.source(repoId, id, 8), staleTime: 60_000 });
+  const grammar = q.data ? grammarFor(q.data.language, q.data.path) : undefined;
+  const tokens = useQuery({
+    queryKey: ['tokens', repoId, id, grammar],
+    queryFn: () => tokenize(q.data?.lines ?? [], grammar),
+    enabled: Boolean(q.data && grammar),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const sites = useMemo(
+    () => (q.data ? sitesByLine(outgoing, q.data.path, q.data.lines, q.data.startLine) : undefined),
+    [q.data, outgoing],
+  );
+  const reveal = useReveal();
   const ref = useRef<HTMLDivElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll again whenever new source arrives
   useEffect(() => {
@@ -290,7 +395,12 @@ function Source({ repoId, id }: { repoId: string; id: string }) {
           return (
             <div key={ln} className="code-line" data-hl={ln >= h0 && ln <= h1}>
               <span className="ln">{ln}</span>
-              <span>{line || ' '}</span>
+              <CodeText
+                text={line || ' '}
+                tokens={tokens.data?.[i]}
+                sites={sites?.get(ln)}
+                onPick={(nid) => void reveal(nid, { view: keepView() })}
+              />
             </div>
           );
         })}

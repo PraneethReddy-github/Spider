@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { GraphNode } from '@spider/shared';
 import type { GraphBuilder } from '../graph/builder.js';
 import { ids } from '../graph/ids.js';
-import type { DeclFact, FileFacts } from '../languages/types.js';
+import type { DeclFact, EndpointFact, FileFacts, MountFact } from '../languages/types.js';
 import type { Discovery } from './discover.js';
 
 export interface ResolveStats {
@@ -274,9 +274,29 @@ interface FileTable {
   own: Map<string, SymbolEntry>;
   /** local binding name → bound entity (symbol id, or file id for namespaces). */
   locals: Map<string, { kind: 'symbol' | 'file' | 'external'; id: string }>;
-  /** scope qname ('' = module) → variable name → constructor/factory reference. */
-  bindings: Map<string, Map<string, { ref: string; isNew: boolean }>>;
+  /** scope qname ('' = module) → variable name → constructor/factory/annotation reference. */
+  bindings: Map<string, Map<string, Binding>>;
+  /** Shared resolution context (module resolvers, id indices). */
+  ctx: ResolveCtx;
 }
+
+interface ResolveCtx {
+  js: JsResolver;
+  py: PyResolver;
+  byId: Map<string, { table: FileTable; entry: SymbolEntry }>;
+  byFileId: Map<string, FileTable>;
+}
+
+interface Binding {
+  ref: string;
+  isNew: boolean;
+  isType?: boolean;
+  /** Scope the binding was declared in ('' = module). */
+  scope: string;
+}
+
+/** HTTP verbs a class-based view (`View.as_view()`) can implement as methods. */
+const CBV_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
 
 const GENERIC_METHODS = new Set([
   'get',
@@ -390,17 +410,25 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     if (m.ecosystem === 'npm' && m.name)
       workspacePkgs.set(m.name, { dir: m.dir, main: (m.extra.main as string) ?? (m.extra.module as string) });
 
+  const jsResolver = new JsResolver(filesByPath, d, workspacePkgs);
+  const pyResolver = new PyResolver(filesByPath, d);
+  const ctx: ResolveCtx = { js: jsResolver, py: pyResolver, byId: new Map(), byFileId: new Map() };
+
   /* ---------- 1. symbol nodes ---------- */
   for (const [p, facts] of all) {
     const fileId = ids.file(p);
-    const table: FileTable = { path: p, fileId, facts, own: new Map(), locals: new Map(), bindings: new Map() };
+    const table: FileTable = { path: p, fileId, facts, own: new Map(), locals: new Map(), bindings: new Map(), ctx };
+    ctx.byFileId.set(fileId, table);
     facts.bindings ??= [];
+    facts.references ??= [];
+    facts.mounts ??= [];
+    facts.routers ??= [];
     tables.set(p, table);
     for (const b of facts.bindings) {
       const key = b.scopeQname ?? '';
       let m = table.bindings.get(key);
       if (!m) table.bindings.set(key, (m = new Map()));
-      m.set(b.name, { ref: b.ref, isNew: b.isNew });
+      m.set(b.name, { ref: b.ref, isNew: b.isNew, isType: b.isType, scope: key });
     }
     const fileNode = g.getNode(fileId);
     if (fileNode) {
@@ -437,6 +465,7 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
       });
       const entry = { id: node.id, decl };
       table.own.set(decl.qname, entry);
+      ctx.byId.set(node.id, { table, entry });
       if (!decl.parentQname) table.locals.set(decl.name, { kind: 'symbol', id: node.id });
       let list = globalByName.get(decl.name);
       if (!list) globalByName.set(decl.name, (list = []));
@@ -446,9 +475,6 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
   }
 
   /* ---------- 2. import resolution ---------- */
-  const jsResolver = new JsResolver(filesByPath, d, workspacePkgs);
-  const pyResolver = new PyResolver(filesByPath, d);
-
   for (const table of tables.values()) {
     const { facts, fileId, path: p } = table;
     for (const imp of facts.imports) {
@@ -480,7 +506,14 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
       if (imp.namespace) table.locals.set(imp.namespace, { kind: 'file', id: targetId });
       for (const n of imp.names) {
         if (n.imported === '*') {
-          if (targetTable)
+          const all = targetTable?.facts.hints.__all__ as string[] | undefined;
+          if (targetTable && all) {
+            // `from pkg import *` honours `__all__`, which may name re-exported imports
+            for (const name of all) {
+              const b = bindExport(targetTable, name, tables, jsResolver, pyResolver, 0);
+              if (b) table.locals.set(name, b);
+            }
+          } else if (targetTable)
             for (const [qn, e] of targetTable.own)
               if (!e.decl.parentQname) table.locals.set(qn, { kind: 'symbol', id: e.id });
           continue;
@@ -489,7 +522,7 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
         if (bound) table.locals.set(n.local, bound);
         else if (facts.language === 'python' && targetTable) {
           // `from pkg import submodule`
-          const sub = pyResolver.resolve(p, imp.specifier ? `${imp.specifier}.${n.imported}` : n.imported);
+          const sub = pyResolver.resolve(p, subModule(imp.specifier, n.imported));
           if (sub && sub.kind === 'file') {
             table.locals.set(n.local, { kind: 'file', id: ids.file(sub.path) });
             g.addEdge('imports', fileId, ids.file(sub.path), { evidence: imp.span });
@@ -555,39 +588,54 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     }
   }
 
-  /* ---------- 5. endpoints ---------- */
+  /* ---------- 5. references (annotations, generics, decorators) ---------- */
+  for (const table of tables.values()) {
+    for (const r of table.facts.references ?? []) {
+      const head = r.name.split('.')[0];
+      if (builtins(table.facts.language).has(head)) continue;
+      const src = r.scopeQname ? (table.own.get(r.scopeQname)?.id ?? nearestOwner(table, r.scopeQname)) : table.fileId;
+      const t = lookupDotted(table, r.name, tables, globalByName, r.scopeQname);
+      // exact bindings only: a name-matched type is a guess, and references claim confidence 1
+      if (t?.length !== 1 || t[0].confidence < 1 || t[0].id === src) continue;
+      g.addEdge('references', src, t[0].id, { evidence: r.span });
+    }
+  }
+
+  /* ---------- 6. endpoints (with cross-file mount prefixes) ---------- */
+  const routes = resolveMounts(tables, globalByName);
   for (const table of tables.values()) {
     for (const ep of table.facts.endpoints) {
-      const id = ids.endpoint(table.path, ep.method, ep.path, ep.span.startLine);
-      g.addNode({
-        id,
-        kind: 'endpoint',
-        name: `${ep.method} ${ep.path}`,
-        qname: `${table.path}::${ep.method} ${ep.path}`,
-        file: table.path,
-        language: table.facts.language,
-        parentId: table.fileId,
-        span: ep.span,
-        metrics: { fanIn: 0, fanOut: 0 },
-        props: {
-          method: ep.method,
-          path: ep.path,
-          framework: ep.framework,
-          protocol: ep.method === 'WS' ? 'ws' : 'http',
-          isTest: g.getNode(table.fileId)?.props.isTest ?? false,
-        },
-      });
-      let handler: { id: string }[] | undefined;
-      if (ep.handlerRef) {
-        const own = table.own.get(ep.handlerRef);
-        handler = own ? [{ id: own.id }] : lookupDotted(table, ep.handlerRef, tables, globalByName, ep.enclosingQname);
+      if (routes.suppressed.has(spanKey(table.path, ep.span))) continue; // `.use('/x', router)` is a mount, not a route
+      let handlerRef = ep.handlerRef;
+      const isCbv = !!handlerRef?.endsWith('.as_view');
+      if (handlerRef && isCbv) handlerRef = handlerRef.slice(0, -'.as_view'.length);
+      let handler: Target[] | undefined;
+      if (handlerRef) {
+        const own = table.own.get(handlerRef);
+        handler = own
+          ? [{ id: own.id, confidence: 1 }]
+          : lookupDotted(table, handlerRef, tables, globalByName, ep.enclosingQname);
       }
       if ((!handler || handler.length === 0) && ep.enclosingQname) {
         const own = table.own.get(ep.enclosingQname);
-        if (own) handler = [{ id: own.id }];
+        if (own) handler = [{ id: own.id, confidence: 1 }];
       }
-      if (handler)
-        for (const h of handler) g.addEdge('exposes', id, h.id, { evidence: ep.span, confidence: 1 / handler.length });
+      // Django / Flask class-based views: one endpoint per HTTP-verb method the class defines
+      const cbv = isCbv && handler?.length === 1 ? table.ctx.byId.get(handler[0].id) : undefined;
+      const verbs =
+        cbv?.entry.decl.kind === 'class' && ep.method === 'ANY'
+          ? CBV_METHODS.map((m) => cbv.table.own.get(`${cbv.entry.decl.qname}.${m}`)).filter(
+              (e): e is SymbolEntry => !!e,
+            )
+          : [];
+      for (const path of routes.pathsOf(table, ep)) {
+        if (verbs.length === 0) {
+          emitEndpoint(g, table, ep, ep.method, path, handler ?? []);
+          continue;
+        }
+        for (const v of verbs)
+          emitEndpoint(g, table, ep, v.decl.name.toUpperCase(), path, [{ id: v.id, confidence: 1 }]);
+      }
     }
   }
 
@@ -606,7 +654,9 @@ function nearestOwner(table: FileTable, qname: string): string {
   return table.fileId;
 }
 
-/** Resolves an exported name in a target file to a symbol (following re-exports). */
+type Bound = { kind: 'symbol' | 'file' | 'external'; id: string };
+
+/** Resolves an exported name in a target file to a symbol (following re-exports and barrels). */
 function bindExport(
   target: FileTable,
   name: string,
@@ -614,7 +664,7 @@ function bindExport(
   js: JsResolver,
   py: PyResolver,
   depth: number,
-): { kind: 'symbol' | 'file' | 'external'; id: string } | undefined {
+): Bound | undefined {
   if (depth > 5) return undefined;
   const own = target.own.get(name);
   if (own && !own.decl.parentQname) return { kind: 'symbol', id: own.id };
@@ -631,18 +681,100 @@ function bindExport(
     } else if (ex.local) {
       const o = target.own.get(ex.local);
       if (o) return { kind: 'symbol', id: o.id };
+      // `import { X } from './x'; export { X }` / `export default X`
+      const imported = bindImported(target, ex.local, tables, js, py, depth);
+      if (imported) return imported;
     }
   }
-  // python: locals imported into a module can be re-exported implicitly
-  const viaLocal = target.locals.get(name);
-  if (viaLocal && target.facts.language === 'python') return viaLocal;
+  // python: names imported into a module (`__init__.py` barrels) are importable from it
+  if (target.facts.language === 'python') {
+    const imported = bindImported(target, name, tables, js, py, depth);
+    if (imported) return imported;
+  }
   if (name === 'default' && own) return { kind: 'symbol', id: own.id };
+  return undefined;
+}
+
+/** What a file's own import statement binds `name` to — independent of import-loop order. */
+function bindImported(
+  target: FileTable,
+  name: string,
+  tables: Map<string, FileTable>,
+  js: JsResolver,
+  py: PyResolver,
+  depth: number,
+): Bound | undefined {
+  const isPy = target.facts.language === 'python';
+  for (const imp of target.facts.imports) {
+    const n = imp.names.find((x) => x.local === name);
+    if (!n && imp.namespace !== name) continue;
+    const r = isPy ? py.resolve(target.path, imp.specifier) : js.resolve(target.path, imp.specifier);
+    if (!r) continue;
+    if (r.kind === 'external') return { kind: 'external', id: ids.external(r.ecosystem, r.name) };
+    if (!n) return { kind: 'file', id: ids.file(r.path) };
+    const t2 = tables.get(r.path);
+    const inner = t2 ? bindExport(t2, n.imported, tables, js, py, depth + 1) : undefined;
+    if (inner) return inner;
+    if (isPy) {
+      // `from pkg import submodule`
+      const sub = py.resolve(target.path, subModule(imp.specifier, n.imported));
+      if (sub?.kind === 'file' && sub.path !== r.path) return { kind: 'file', id: ids.file(sub.path) };
+    }
+  }
   return undefined;
 }
 
 interface Target {
   id: string;
   confidence: number;
+}
+
+/** Member `rest` of a class (own, else inherited at 0.9). */
+function memberOf(
+  owner: { table: FileTable; entry: SymbolEntry },
+  rest: string[],
+  tables: Map<string, FileTable>,
+  globalByName: Map<string, SymbolEntry[]>,
+): Target[] | undefined {
+  const member = owner.table.own.get(`${owner.entry.decl.qname}.${rest.join('.')}`);
+  if (member) return [{ id: member.id, confidence: 1 }];
+  const inherited = findInherited(owner.table, owner.entry, rest[0], tables, globalByName, 0);
+  if (inherited) return [{ id: inherited, confidence: 0.9 }];
+  return undefined;
+}
+
+/**
+ * The class a bound variable is an instance of: `new X()` / `X()` / `x: X` / `x = await svc.find()` when
+ * `find` has an annotated return type. `'external'` for library types, undefined when unknown.
+ */
+function classOfBinding(
+  table: FileTable,
+  b: Binding,
+  tables: Map<string, FileTable>,
+  globalByName: Map<string, SymbolEntry[]>,
+  depth: number,
+): { table: FileTable; entry: SymbolEntry } | 'external' | undefined {
+  if (table.locals.get(b.ref.split('.')[0])?.kind === 'external') return 'external';
+  const targets = lookupDotted(table, b.ref, tables, globalByName, b.scope || undefined, depth + 1);
+  if (targets?.length !== 1) return undefined;
+  // an annotation must bind exactly; constructor calls keep their historical leniency
+  if ((b.isType || !b.isNew) && targets[0].confidence < 1) return undefined;
+  const owner = table.ctx.byId.get(targets[0].id);
+  if (!owner) return undefined;
+  if (owner.entry.decl.kind === 'class') return b.isType || b.isNew || !b.ref.includes('.') ? owner : undefined;
+  // a call: type the result from the callee's annotated return type — only when the callee itself bound exactly
+  const ret = owner.entry.decl.returns;
+  if (!ret || depth > 4 || targets[0].confidence < 1) return undefined;
+  if (owner.table.locals.get(ret.split('.')[0])?.kind === 'external') return 'external';
+  const rt = lookupDotted(owner.table, ret, tables, globalByName, owner.entry.decl.parentQname, depth + 1);
+  if (rt?.length !== 1 || rt[0].confidence < 1) return undefined;
+  const cls = table.ctx.byId.get(rt[0].id);
+  return cls?.entry.decl.kind === 'class' ? cls : undefined;
+}
+
+/** Interfaces declare no method bodies: typing a receiver to one would only lose recall. */
+function isInterface(owner: { entry: SymbolEntry }): boolean {
+  return owner.entry.decl.classKind === 'interface';
 }
 
 /**
@@ -654,7 +786,9 @@ function lookupDotted(
   tables: Map<string, FileTable>,
   globalByName: Map<string, SymbolEntry[]>,
   contextQname?: string,
+  depth = 0,
 ): Target[] | undefined {
+  if (depth > 6) return undefined;
   const segs = dotted.split('.').filter(Boolean);
   if (segs.length === 0) return undefined;
   const [head, ...rest] = segs;
@@ -665,6 +799,13 @@ function lookupDotted(
     if (cls && rest.length) {
       const member = table.own.get(`${cls.decl.qname}.${rest.join('.')}`);
       if (member) return [{ id: member.id, confidence: 1 }];
+      // this.repo.find() where `repo` is a typed field / constructor parameter property
+      const field = rest.length > 1 ? table.bindings.get(cls.decl.qname)?.get(`${head}.${rest[0]}`) : undefined;
+      if (field) {
+        const owner = classOfBinding(table, field, tables, globalByName, depth);
+        if (owner === 'external') return undefined;
+        if (owner && !isInterface(owner)) return memberOf(owner, rest.slice(1), tables, globalByName);
+      }
       // inherited
       const inherited = findInherited(table, cls, rest[0], tables, globalByName, 0);
       if (inherited) return [{ id: inherited, confidence: 0.9 }];
@@ -688,23 +829,13 @@ function lookupDotted(
   const own = table.own.get(dotted);
   if (own) return [{ id: own.id, confidence: 1 }];
 
-  // variable bound to `new X()` / `X()` in an enclosing scope → treat as instance of X
+  // variable bound to `new X()` / `X()` / `x: X` / an annotated call result → instance of X
   if (rest.length > 0) {
     const binding = findBinding(table, head, contextQname);
     if (binding) {
-      const ctorTargets = lookupDotted(table, binding.ref, tables, globalByName, undefined);
-      const ctorLocal = table.locals.get(binding.ref.split('.')[0]);
-      if (ctorLocal?.kind === 'external') return undefined; // instance of a library type
-      if (ctorTargets && ctorTargets.length === 1) {
-        const owner = findEntryById(tables, ctorTargets[0].id);
-        if (owner?.entry.decl.kind === 'class') {
-          const member = owner.table.own.get(`${owner.entry.decl.qname}.${rest.join('.')}`);
-          if (member) return [{ id: member.id, confidence: 1 }];
-          const inherited = findInherited(owner.table, owner.entry, rest[0], tables, globalByName, 0);
-          if (inherited) return [{ id: inherited, confidence: 0.9 }];
-          return undefined;
-        }
-      }
+      const owner = classOfBinding(table, binding, tables, globalByName, depth);
+      if (owner === 'external') return undefined; // instance of a library type
+      if (owner && !isInterface(owner)) return memberOf(owner, rest, tables, globalByName);
     }
   }
 
@@ -713,21 +844,24 @@ function lookupDotted(
     if (local.kind === 'external') return undefined; // calls into libraries are not graphed at symbol level
     if (rest.length === 0) return local.kind === 'symbol' ? [{ id: local.id, confidence: 1 }] : undefined;
     if (local.kind === 'file') {
-      const t = [...tables.values()].find((x) => x.fileId === local.id);
+      const t = table.ctx.byFileId.get(local.id);
       if (!t) return undefined;
       const e = t.own.get(rest.join('.'));
       if (e) return [{ id: e.id, confidence: 1 }];
-      const viaExport = t.locals.get(rest[0]);
-      if (viaExport?.kind === 'symbol') return [{ id: viaExport.id, confidence: 0.9 }];
-      return undefined;
+      // namespace import of a barrel: `import * as S from './services'; S.UserService.create()`
+      const viaExport = bindExport(t, rest[0], tables, table.ctx.js, table.ctx.py, 0);
+      if (viaExport?.kind !== 'symbol') return undefined;
+      // `ns.fn.call(thisArg, …)` / `.apply` invoke `fn` itself
+      if (rest.length === 1 || (rest.length === 2 && (rest[1] === 'call' || rest[1] === 'apply')))
+        return [{ id: viaExport.id, confidence: 1 }];
+      const owner = table.ctx.byId.get(viaExport.id);
+      return owner?.entry.decl.kind === 'class' ? memberOf(owner, rest.slice(1), tables, globalByName) : undefined;
     }
     // symbol-bound local: Class.method / instance.method (instance of imported class unknown → name fallback)
-    const owner = findEntryById(tables, local.id);
+    const owner = table.ctx.byId.get(local.id);
     if (owner) {
-      const member = owner.table.own.get(`${owner.entry.decl.qname}.${rest.join('.')}`);
-      if (member) return [{ id: member.id, confidence: 1 }];
-      const inherited = findInherited(owner.table, owner.entry, rest[0], tables, globalByName, 0);
-      if (inherited) return [{ id: inherited, confidence: 0.9 }];
+      const m = memberOf(owner, rest, tables, globalByName);
+      if (m) return m;
     }
     return fallbackByName(rest[rest.length - 1], globalByName, ['method']);
   }
@@ -749,11 +883,7 @@ function classifyUnbound(table: FileTable, head: string, contextQname?: string):
   return 'unknown';
 }
 
-function findBinding(
-  table: FileTable,
-  name: string,
-  contextQname?: string,
-): { ref: string; isNew: boolean } | undefined {
+function findBinding(table: FileTable, name: string, contextQname?: string): Binding | undefined {
   const parts = contextQname ? contextQname.split('.') : [];
   while (true) {
     const b = table.bindings.get(parts.join('.'))?.get(name);
@@ -786,14 +916,6 @@ function enclosingClass(table: FileTable, contextQname?: string): SymbolEntry | 
   return undefined;
 }
 
-function findEntryById(
-  tables: Map<string, FileTable>,
-  id: string,
-): { table: FileTable; entry: SymbolEntry } | undefined {
-  for (const t of tables.values()) for (const e of t.own.values()) if (e.id === id) return { table: t, entry: e };
-  return undefined;
-}
-
 function findInherited(
   table: FileTable,
   cls: SymbolEntry,
@@ -806,7 +928,7 @@ function findInherited(
   for (const base of cls.decl.extends ?? []) {
     const targets = lookupDotted(table, base, tables, globalByName, undefined);
     if (!targets || targets.length !== 1) continue;
-    const owner = findEntryById(tables, targets[0].id);
+    const owner = table.ctx.byId.get(targets[0].id);
     if (!owner) continue;
     const m = owner.table.own.get(`${owner.entry.decl.qname}.${member}`);
     if (m) return m.id;
@@ -814,6 +936,159 @@ function findInherited(
     if (deeper) return deeper;
   }
   return undefined;
+}
+
+/** `from pkg import sub` → `pkg.sub`; `from . import sub` → `.sub` (not `..sub`). */
+function subModule(spec: string, name: string): string {
+  if (!spec) return name;
+  return spec.endsWith('.') ? `${spec}${name}` : `${spec}.${name}`;
+}
+
+/* ---------- endpoints & mounts ---------- */
+
+function spanKey(file: string, span: { startLine: number; startCol: number }): string {
+  return `${file}:${span.startLine}:${span.startCol}`;
+}
+
+function joinUrl(a: string, b: string): string {
+  if (!a) return b;
+  if (!b) return a;
+  return `${a.replace(/\/+$/, '')}/${b.replace(/^\/+/, '')}`;
+}
+
+function emitEndpoint(
+  g: GraphBuilder,
+  table: FileTable,
+  ep: EndpointFact,
+  method: string,
+  path: string,
+  handler: Target[],
+): void {
+  const id = ids.endpoint(table.path, method, path, ep.span.startLine);
+  g.addNode({
+    id,
+    kind: 'endpoint',
+    name: `${method} ${path}`,
+    qname: `${table.path}::${method} ${path}`,
+    file: table.path,
+    language: table.facts.language,
+    parentId: table.fileId,
+    span: ep.span,
+    metrics: { fanIn: 0, fanOut: 0 },
+    props: {
+      method,
+      path,
+      framework: ep.framework,
+      protocol: method === 'WS' ? 'ws' : 'http',
+      isTest: g.getNode(table.fileId)?.props.isTest ?? false,
+    },
+  });
+  for (const h of handler) g.addEdge('exposes', id, h.id, { evidence: ep.span, confidence: 1 / handler.length });
+}
+
+interface ResolvedMount {
+  parent?: string;
+  prefix: string;
+  replaces: boolean;
+}
+
+/**
+ * Cross-file route prefixes. Keys are symbol ids of router variables (`router`, `bp`, `urlpatterns`)
+ * or NestJS controller/module classes; a mount says "child key is served under parent key + prefix".
+ */
+function resolveMounts(tables: Map<string, FileTable>, globalByName: Map<string, SymbolEntry[]>) {
+  const exact = (table: FileTable, ref: string): string | undefined => {
+    const own = table.own.get(ref);
+    if (own) return own.id;
+    const t = lookupDotted(table, ref, tables, globalByName, undefined);
+    return t?.length === 1 && t[0].confidence === 1 ? t[0].id : undefined;
+  };
+  const urlpatternsOf = (path: string | undefined) => (path ? tables.get(path)?.own.get('urlpatterns')?.id : undefined);
+  const mountKey = (table: FileTable, m: MountFact): string | undefined => {
+    if (m.targetIsModule) {
+      const r = table.ctx.py.resolve(table.path, m.target);
+      return r?.kind === 'file' ? urlpatternsOf(r.path) : undefined;
+    }
+    const local = table.locals.get(m.target);
+    if (local?.kind === 'file') return urlpatternsOf(table.ctx.byFileId.get(local.id)?.path);
+    const key = exact(table, m.target);
+    if (key || table.facts.language !== 'python' || m.parent !== 'urlpatterns') return key;
+    const r = table.ctx.py.resolve(table.path, m.target); // include(users.urls)
+    return r?.kind === 'file' ? urlpatternsOf(r.path) : undefined;
+  };
+
+  const ownPrefix = new Map<string, string>();
+  const receiverKeys = new Set<string>();
+  const epKey = new Map<EndpointFact, string>();
+  for (const table of tables.values()) {
+    for (const r of table.facts.routers ?? []) {
+      const id = table.own.get(r.name)?.id;
+      if (id) ownPrefix.set(id, r.prefix);
+    }
+    for (const ep of table.facts.endpoints) {
+      const key = ep.receiver ? exact(table, ep.receiver) : undefined;
+      if (!key) continue;
+      epKey.set(ep, key);
+      receiverKeys.add(key);
+    }
+  }
+  const pending: { table: FileTable; m: MountFact; child: string; parent?: string }[] = [];
+  const globals = new Map<string, Set<string>>();
+  const parentKeys = new Set<string>();
+  for (const table of tables.values()) {
+    for (const m of table.facts.mounts ?? []) {
+      if (m.global) {
+        const set = globals.get(m.framework ?? '') ?? new Set<string>();
+        set.add(m.prefix);
+        globals.set(m.framework ?? '', set);
+        continue;
+      }
+      const child = mountKey(table, m);
+      if (!child) continue;
+      const parent = m.parent ? exact(table, m.parent) : undefined;
+      if (parent) parentKeys.add(parent);
+      pending.push({ table, m, child, parent });
+    }
+  }
+  const mountsOf = new Map<string, ResolvedMount[]>();
+  const suppressed = new Set<string>();
+  for (const { table, m, child, parent } of pending) {
+    // only routers are mounted; `app.use('/x', authMiddleware)` stays a middleware route
+    if (!ownPrefix.has(child) && !receiverKeys.has(child) && !parentKeys.has(child)) continue;
+    const list = mountsOf.get(child) ?? [];
+    list.push({ parent, prefix: m.prefix, replaces: !!m.replacesOwnPrefix });
+    mountsOf.set(child, list);
+    suppressed.add(spanKey(table.path, m.span));
+  }
+
+  const prefixesOf = (key: string, depth: number): string[] => {
+    const own = ownPrefix.get(key) ?? '';
+    const ms = mountsOf.get(key);
+    if (!ms || depth > 6) return [own];
+    const out = new Set<string>();
+    for (const m of ms) {
+      const base = m.replaces && m.prefix ? m.prefix : joinUrl(m.prefix, own);
+      for (const pp of m.parent ? prefixesOf(m.parent, depth + 1) : ['']) out.add(joinUrl(pp, base));
+    }
+    return [...out].slice(0, 8);
+  };
+
+  const pathsOf = (table: FileTable, ep: EndpointFact): string[] => {
+    const key = epKey.get(ep);
+    let paths = [ep.path];
+    if (key && mountsOf.has(key)) {
+      const rp = ep.receiverPrefix;
+      let rest = rp && ep.path.startsWith(rp) ? ep.path.slice(rp.length) : ep.path;
+      // JS routers serve `/` under a prefix at the bare prefix (koa-router, Hono, Express); Python keeps the slash
+      if (rest === '/' && table.facts.language !== 'python') rest = '';
+      paths = prefixesOf(key, 0).map((p) => joinUrl(p, rest) || '/');
+    }
+    const gp = globals.get(ep.framework);
+    // several apps with different global prefixes → don't guess
+    if (gp?.size === 1) paths = paths.map((p) => joinUrl([...gp][0], p));
+    return paths.map((p) => (p.startsWith('/') || p === '*' || p.startsWith('http') ? p : `/${p}`));
+  };
+  return { suppressed, pathsOf };
 }
 
 /* ---------- module resolvers ---------- */

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { actions } from '../actions';
-import { useNodeDetail } from '../hooks';
+import { useEditorUrl, useNodeDetail } from '../hooks';
 import { useStore } from '../store';
 
 export function ContextMenu({ repoId }: { repoId: string }) {
@@ -10,6 +10,8 @@ export function ContextMenu({ repoId }: { repoId: string }) {
   const view = useStore((s) => s.view);
   const { data } = useNodeDetail(repoId, menu?.nodeId);
   const ref = useRef<HTMLDivElement>(null);
+  const node = menu && data?.node.id === menu.nodeId ? data.node : undefined;
+  const editorHref = useEditorUrl(repoId, node);
 
   useEffect(() => {
     if (!menu) return;
@@ -23,7 +25,6 @@ export function ContextMenu({ repoId }: { repoId: string }) {
 
   if (!menu) return null;
   const id = menu.nodeId;
-  const node = data?.node.id === id ? data.node : undefined;
   const isContainer = (data?.children.length ?? 0) > 0;
   const isExpanded = expanded.includes(id);
   const run = (fn: () => void) => () => {
@@ -61,6 +62,11 @@ export function ContextMenu({ repoId }: { repoId: string }) {
       />
       <Item label="Hide" kbd="H" onClick={run(() => actions.hide(id))} />
       <Item label="Copy id" onClick={run(() => void actions.copyId(id))} />
+      <Item
+        label="Open in editor"
+        disabled={!editorHref}
+        onClick={run(() => editorHref && actions.openInEditor(editorHref))}
+      />
     </div>
   );
 }
