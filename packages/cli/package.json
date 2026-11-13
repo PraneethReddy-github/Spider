@@ -1,0 +1,14 @@
+{
+  "name": "spider-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "spider": "./dist/index.js" },
+  "main": "./dist/index.js",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": {
+    "@spider/core": "workspace:*",
+    "@spider/server": "workspace:*",
+    "commander": "^12.1.0",
+    "picocolors": "^1.0.1"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "spider",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Intelligent codebase analysis and visualization platform",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/**' run build",
+    "dev": "pnpm -r --parallel run dev",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "spider": "node packages/cli/dist/index.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5",
+    "@types/node": "^20.14.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": { "node": ">=20" }
+}

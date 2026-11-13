@@ -1,0 +1,23 @@
+{
+  "name": "@spider/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
+  "dependencies": {
+    "@spider/shared": "workspace:*",
+    "web-tree-sitter": "0.22.6",
+    "tree-sitter-wasms": "0.1.12",
+    "better-sqlite3": "^11.1.2",
+    "graphology": "^0.25.4",
+    "graphology-types": "^0.24.7",
+    "graphology-shortest-path": "^2.1.0",
+    "graphology-communities-louvain": "^2.0.1",
+    "graphology-metrics": "^2.2.0",
+    "ignore": "^5.3.1",
+    "fast-glob": "^3.3.2",
+    "simple-git": "^3.25.0"
+  },
+  "devDependencies": { "@types/better-sqlite3": "^7.6.11" }
+}
