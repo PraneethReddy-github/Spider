@@ -2,9 +2,15 @@
   "name": "spider-cli",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "spider": "./dist/index.js" },
+  "bin": {
+    "spider": "./dist/index.js"
+  },
   "main": "./dist/index.js",
-  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node dist/index.js serve"
+  },
   "dependencies": {
     "@spider/core": "workspace:*",
     "@spider/server": "workspace:*",

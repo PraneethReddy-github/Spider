@@ -12,10 +12,20 @@ describe('typescript / express fixture', async () => {
     expect(stats.unresolvedImports).toBe(0);
   });
 
+  it('splits library calls from unresolved calls', () => {
+    expect(stats.externalCalls).toBe(5);
+    expect(stats.unresolvedCalls).toBe(1); // pool.query: `pool` is assigned, not bound, so its type is unknown
+  });
+
   it('builds symbol nodes with hierarchy', () => {
     const cls = [...g.nodes.values()].find((n) => n.kind === 'class' && n.name === 'OrderController')!;
     expect(cls).toBeDefined();
-    expect(g.children(cls.id).map((c) => c.name).sort()).toEqual(['create', 'get']);
+    expect(
+      g
+        .children(cls.id)
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(['create', 'get']);
     expect(g.getNode(cls.parentId!)?.kind).toBe('file');
   });
 
@@ -25,11 +35,15 @@ describe('typescript / express fixture', async () => {
     expect(edges).toContain('calls src/routes/orders.ts::OrderController.get -> src/services/db.ts::query');
     expect(edges).toContain('calls src/routes/orders.ts::OrderController.get -> src/routes/base.ts::BaseController.ok'); // inherited via this.ok
     // instance binding: const svc = new UserService(); svc.list()
-    expect(edges).toContain('calls src/routes/users.ts::registerUserRoutes.GET /users -> src/services/userService.ts::UserService.list');
+    expect(edges).toContain(
+      'calls src/routes/users.ts::registerUserRoutes.GET /users -> src/services/userService.ts::UserService.list',
+    );
     // module-level binding: orders.get(...)
     expect(edges).toContain('calls src/index.ts -> src/routes/orders.ts::OrderController.get');
     // must not bind app.get(...) to OrderController.get by name
-    expect(edges).not.toContain('calls src/routes/users.ts::registerUserRoutes -> src/routes/orders.ts::OrderController.get');
+    expect(edges).not.toContain(
+      'calls src/routes/users.ts::registerUserRoutes -> src/routes/orders.ts::OrderController.get',
+    );
   });
 
   it('detects express endpoints and binds handlers', () => {
@@ -46,10 +60,22 @@ describe('typescript / express fixture', async () => {
     expect(t.nodes.map((n) => n.name)).toEqual(expect.arrayContaining(['getUser', 'find', 'query']));
   });
 
+  it('finds paths whose endpoints are containers', () => {
+    const idx = [...g.nodes.values()].find((n) => n.kind === 'file' && n.file === 'src/index.ts')!;
+    const services = [...g.nodes.values()].find((n) => n.kind === 'directory' && n.name === 'services')!;
+    const p = q.path(idx.id, services.id);
+    expect(p.nodes.length).toBeGreaterThan(1);
+    expect(p.nodes[0].file).toBe('src/index.ts');
+    expect(p.nodes[p.nodes.length - 1].file?.startsWith('src/services/')).toBe(true);
+    expect(p.edges.length).toBe(p.nodes.length - 1);
+  });
+
   it('computes upstream impact', () => {
     const query = [...g.nodes.values()].find((n) => n.kind === 'function' && n.name === 'query')!;
     const up = q.upstream(query.id, 3);
-    expect(up.nodes.map((n) => n.name)).toEqual(expect.arrayContaining(['get', 'create', 'list', 'find', 'GET /users/:id']));
+    expect(up.nodes.map((n) => n.name)).toEqual(
+      expect.arrayContaining(['get', 'create', 'list', 'find', 'GET /users/:id']),
+    );
   });
 
   it('marks tests and flags dead code without false positives on interfaces', () => {
@@ -71,7 +97,9 @@ describe('typescript / express fixture', async () => {
       expect(ids.has(e.dst)).toBe(true);
     }
     expect(l3.nodes.some((n) => n.file === 'src/utils.test.ts')).toBe(false);
-    expect(q.projection({ level: 'L2', includeTests: true }).nodes.some((n) => n.file === 'src/utils.test.ts')).toBe(true);
+    expect(q.projection({ level: 'L2', includeTests: true }).nodes.some((n) => n.file === 'src/utils.test.ts')).toBe(
+      true,
+    );
   });
 
   it('expanding a container keeps it as a group node with children inside', () => {

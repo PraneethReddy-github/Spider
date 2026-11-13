@@ -1,30 +1,34 @@
-import type { GraphNode, SubGraph } from '@spider/shared';
-import { useQueryClient } from '@tanstack/react-query';
-import { useCallback } from 'react';
+import type { Diagnostic } from '@spider/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useMemo } from 'react';
 import { api } from './api';
-import { useStore } from './store';
+import { type ViewMode, useStore } from './store';
 
-/** Ids of the nodes currently drawn on the Map (kept outside React state; read on demand). */
+/** Ids currently drawn on the Map (kept outside React state; read on demand). */
 export const mapVisible = { ids: new Set<string>() };
 
 /**
- * Select a node and make sure the Map shows it: if it isn't in the current projection, expand its
- * ancestors (nearest first, up to the first one that is already visible), then centre on it.
+ * Select a node and make sure the Map shows it: when it isn't in the current projection, expand
+ * its ancestors (nearest first, up to the first one already visible), then centre on it.
  */
 export function useReveal() {
   const qc = useQueryClient();
   return useCallback(
-    async (id: string, opts: { view?: 'map' | 'focus'; keepView?: boolean } = {}) => {
+    async (id: string, opts: { view?: ViewMode } = {}) => {
       const s = useStore.getState();
       const repoId = s.repoId;
       if (!repoId) return;
       s.select(id);
-      const view = opts.view ?? (opts.keepView ? s.view : 'map');
+      const view = opts.view ?? 'map';
       if (view !== s.view) s.setView(view);
       if (view !== 'map') return;
       if (!mapVisible.ids.has(id)) {
         try {
-          const detail = await qc.fetchQuery({ queryKey: ['node', repoId, id], queryFn: () => api.node(repoId, id), staleTime: 60_000 });
+          const detail = await qc.fetchQuery({
+            queryKey: ['node', repoId, id],
+            queryFn: () => api.node(repoId, id),
+            staleTime: 60_000,
+          });
           const toExpand: string[] = [];
           for (const p of detail.parents) {
             if (p.id === 'repo' || p.kind === 'repository') break;
@@ -33,7 +37,7 @@ export function useReveal() {
           }
           if (toExpand.length) useStore.getState().expandMany(toExpand);
         } catch {
-          /* node may not exist any more */
+          /* node no longer exists: selection stays, nothing to expand */
         }
       }
       useStore.getState().setCenterOn(id);
@@ -42,23 +46,30 @@ export function useReveal() {
   );
 }
 
-export function nodeById(sg: SubGraph | undefined, id: string | undefined): GraphNode | undefined {
-  if (!sg || !id) return undefined;
-  return sg.nodes.find((n) => n.id === id);
+export function useDiagnostics(repoId: string) {
+  return useQuery({ queryKey: ['diagnostics', repoId], queryFn: () => api.diagnostics(repoId), staleTime: 5 * 60_000 });
 }
 
-export function fmtNum(n: number | undefined): string {
-  if (n === undefined || n === null || Number.isNaN(n)) return '–';
-  if (Math.abs(n) >= 1000) return n.toLocaleString();
-  return Number.isInteger(n) ? String(n) : n.toFixed(3);
+/** Diagnostic rings: cycles in danger, god modules in warn. */
+export function useMarks(repoId: string): Map<string, 'danger' | 'warn'> {
+  const { data } = useDiagnostics(repoId);
+  return useMemo(() => marksFrom(data ?? []), [data]);
 }
 
-export function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+export function marksFrom(diags: Diagnostic[]): Map<string, 'danger' | 'warn'> {
+  const m = new Map<string, 'danger' | 'warn'>();
+  for (const d of diags) {
+    if (d.type === 'cycle') for (const id of d.nodeIds) m.set(id, 'danger');
+    else if (d.type === 'god-module') for (const id of d.nodeIds) if (!m.has(id)) m.set(id, 'warn');
+  }
+  return m;
 }
 
-export function shortSource(src: string): string {
-  return src.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '');
+export function useNodeDetail(repoId: string, id: string | undefined) {
+  return useQuery({
+    queryKey: ['node', repoId, id],
+    queryFn: () => api.node(repoId, id as string),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+  });
 }

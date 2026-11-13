@@ -69,27 +69,76 @@ const DEFAULT_IGNORES = [
   'package-lock.json',
   'pnpm-lock.yaml',
   'yarn.lock',
-  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.ico', '*.woff', '*.woff2', '*.ttf', '*.eot',
-  '*.pdf', '*.zip', '*.gz', '*.tar', '*.wasm', '*.so', '*.dll', '*.dylib', '*.pyc', '*.class', '*.jar',
+  '*.png',
+  '*.jpg',
+  '*.jpeg',
+  '*.gif',
+  '*.svg',
+  '*.ico',
+  '*.woff',
+  '*.woff2',
+  '*.ttf',
+  '*.eot',
+  '*.pdf',
+  '*.zip',
+  '*.gz',
+  '*.tar',
+  '*.wasm',
+  '*.so',
+  '*.dll',
+  '*.dylib',
+  '*.pyc',
+  '*.class',
+  '*.jar',
 ];
 
 const EXT_LANG: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'tsx', '.mts': 'typescript', '.cts': 'typescript',
-  '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
-  '.py': 'python', '.pyi': 'python',
+  '.ts': 'typescript',
+  '.tsx': 'tsx',
+  '.mts': 'typescript',
+  '.cts': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.py': 'python',
+  '.pyi': 'python',
   '.go': 'go',
   '.rs': 'rust',
-  '.java': 'java', '.kt': 'kotlin', '.kts': 'kotlin',
+  '.java': 'java',
+  '.kt': 'kotlin',
+  '.kts': 'kotlin',
   '.cs': 'csharp',
   '.rb': 'ruby',
   '.php': 'php',
-  '.c': 'c', '.h': 'c', '.cc': 'cpp', '.cpp': 'cpp', '.hpp': 'cpp', '.cxx': 'cpp',
-  '.swift': 'swift', '.scala': 'scala', '.lua': 'lua', '.ex': 'elixir', '.exs': 'elixir',
-  '.sh': 'shell', '.bash': 'shell',
-  '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
-  '.md': 'markdown', '.mdx': 'markdown', '.html': 'html', '.css': 'css', '.scss': 'scss',
-  '.sql': 'sql', '.graphql': 'graphql', '.gql': 'graphql', '.proto': 'protobuf',
-  '.vue': 'vue', '.svelte': 'svelte',
+  '.c': 'c',
+  '.h': 'c',
+  '.cc': 'cpp',
+  '.cpp': 'cpp',
+  '.hpp': 'cpp',
+  '.cxx': 'cpp',
+  '.swift': 'swift',
+  '.scala': 'scala',
+  '.lua': 'lua',
+  '.ex': 'elixir',
+  '.exs': 'elixir',
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.json': 'json',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.toml': 'toml',
+  '.md': 'markdown',
+  '.mdx': 'markdown',
+  '.html': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.sql': 'sql',
+  '.graphql': 'graphql',
+  '.gql': 'graphql',
+  '.proto': 'protobuf',
+  '.vue': 'vue',
+  '.svelte': 'svelte',
 };
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
@@ -181,7 +230,8 @@ export async function discover(root: string, onProgress?: (n: number) => void): 
 
   // Common python source roots
   for (const cand of ['', 'src', 'lib', 'app']) {
-    if (files.some((f) => f.language === 'python' && (cand ? f.path.startsWith(cand + '/') : true))) pythonRoots.add(cand);
+    if (files.some((f) => f.language === 'python' && (cand ? f.path.startsWith(`${cand}/`) : true)))
+      pythonRoots.add(cand);
   }
   for (const m of manifests) if (m.ecosystem === 'pypi') pythonRoots.add(m.dir);
 
@@ -192,14 +242,33 @@ export async function discover(root: string, onProgress?: (n: number) => void): 
 }
 
 const NPM_FRAMEWORKS: Record<string, string> = {
-  express: 'express', fastify: 'fastify', koa: 'koa', hono: 'hono', '@nestjs/core': 'nestjs', next: 'nextjs',
-  react: 'react', vue: 'vue', svelte: 'svelte', '@angular/core': 'angular', '@hapi/hapi': 'hapi',
-  '@remix-run/react': 'remix', 'apollo-server': 'apollo', '@apollo/server': 'apollo', '@trpc/server': 'trpc',
+  express: 'express',
+  fastify: 'fastify',
+  koa: 'koa',
+  hono: 'hono',
+  '@nestjs/core': 'nestjs',
+  next: 'nextjs',
+  react: 'react',
+  vue: 'vue',
+  svelte: 'svelte',
+  '@angular/core': 'angular',
+  '@hapi/hapi': 'hapi',
+  '@remix-run/react': 'remix',
+  'apollo-server': 'apollo',
+  '@apollo/server': 'apollo',
+  '@trpc/server': 'trpc',
 };
 
 const PY_FRAMEWORKS: Record<string, string> = {
-  fastapi: 'fastapi', flask: 'flask', django: 'django', starlette: 'starlette', tornado: 'tornado',
-  sanic: 'sanic', aiohttp: 'aiohttp', celery: 'celery', sqlalchemy: 'sqlalchemy',
+  fastapi: 'fastapi',
+  flask: 'flask',
+  django: 'django',
+  starlette: 'starlette',
+  tornado: 'tornado',
+  sanic: 'sanic',
+  aiohttp: 'aiohttp',
+  celery: 'celery',
+  sqlalchemy: 'sqlalchemy',
 };
 
 async function readNpmManifest(abs: string, rel: string, frameworks: Set<string>): Promise<Manifest> {
@@ -209,7 +278,11 @@ async function readNpmManifest(abs: string, rel: string, frameworks: Set<string>
     const json = JSON.parse(await fs.readFile(abs, 'utf8'));
     m.name = json.name ?? m.name;
     m.version = json.version;
-    for (const [field, isDev] of [['dependencies', false], ['devDependencies', true], ['peerDependencies', false]] as const) {
+    for (const [field, isDev] of [
+      ['dependencies', false],
+      ['devDependencies', true],
+      ['peerDependencies', false],
+    ] as const) {
       for (const [name, version] of Object.entries(json[field] ?? {})) {
         m.deps.push({ name, version: String(version), isDev });
         if (!isDev && NPM_FRAMEWORKS[name]) {
@@ -218,7 +291,14 @@ async function readNpmManifest(abs: string, rel: string, frameworks: Set<string>
         }
       }
     }
-    m.extra = { main: json.main, module: json.module, exports: json.exports, bin: json.bin, workspaces: json.workspaces, type: json.type };
+    m.extra = {
+      main: json.main,
+      module: json.module,
+      exports: json.exports,
+      bin: json.bin,
+      workspaces: json.workspaces,
+      type: json.type,
+    };
   } catch {
     /* ignore malformed */
   }
@@ -237,7 +317,34 @@ async function readPyManifest(abs: string, rel: string, frameworks: Set<string>)
     const seen = new Set<string>();
     while ((mm = depRe.exec(text))) {
       const name = mm[1].toLowerCase();
-      if (['name', 'version', 'description', 'requires', 'build', 'backend', 'python', 'readme', 'license', 'authors', 'dependencies', 'classifiers', 'urls', 'project', 'tool', 'packages', 'include', 'exclude', 'homepage', 'repository', 'keywords', 'scripts', 'optional'].includes(name)) continue;
+      if (
+        [
+          'name',
+          'version',
+          'description',
+          'requires',
+          'build',
+          'backend',
+          'python',
+          'readme',
+          'license',
+          'authors',
+          'dependencies',
+          'classifiers',
+          'urls',
+          'project',
+          'tool',
+          'packages',
+          'include',
+          'exclude',
+          'homepage',
+          'repository',
+          'keywords',
+          'scripts',
+          'optional',
+        ].includes(name)
+      )
+        continue;
       if (seen.has(name)) continue;
       seen.add(name);
       const isDev = /dev|test/.test(rel);
@@ -291,7 +398,10 @@ async function readTsConfig(abs: string, rel: string): Promise<TsConfigInfo | un
   try {
     const raw = await fs.readFile(abs, 'utf8');
     // strip comments & trailing commas (tsconfig is JSONC)
-    const cleaned = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1');
+    const cleaned = raw
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/,(\s*[}\]])/g, '$1');
     const json = JSON.parse(cleaned);
     const co = json.compilerOptions ?? {};
     const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
@@ -312,7 +422,15 @@ export function emitStructure(g: GraphBuilder, d: Discovery, repoName: string): 
     const parent = path.posix.dirname(dirRel);
     const parentId = ensureDir(parent === '.' ? '' : parent);
     const id = ids.directory(dirRel);
-    g.addNode({ id, kind: 'directory', name: path.posix.basename(dirRel), qname: dirRel, file: dirRel, parentId, props: { path: dirRel } });
+    g.addNode({
+      id,
+      kind: 'directory',
+      name: path.posix.basename(dirRel),
+      qname: dirRel,
+      file: dirRel,
+      parentId,
+      props: { path: dirRel },
+    });
     dirIds.set(dirRel, id);
     return id;
   }
@@ -335,10 +453,24 @@ export function emitStructure(g: GraphBuilder, d: Discovery, repoName: string): 
   for (const m of d.manifests) {
     const pkgId = ids.pkg(m.path);
     const dirId = dirIds.get(m.dir) ?? ids.repo();
-    g.addNode({ id: pkgId, kind: 'package', name: m.name, qname: m.path, file: m.path, parentId: dirId, props: { ecosystem: m.ecosystem, version: m.version, dir: m.dir, frameworks: m.frameworks } });
+    g.addNode({
+      id: pkgId,
+      kind: 'package',
+      name: m.name,
+      qname: m.path,
+      file: m.path,
+      parentId: dirId,
+      props: { ecosystem: m.ecosystem, version: m.version, dir: m.dir, frameworks: m.frameworks },
+    });
     for (const dep of m.deps) {
       const extId = ids.external(m.ecosystem, dep.name);
-      g.addNode({ id: extId, kind: 'external', name: dep.name, qname: `${m.ecosystem}:${dep.name}`, props: { ecosystem: m.ecosystem, version: dep.version, isDev: dep.isDev } });
+      g.addNode({
+        id: extId,
+        kind: 'external',
+        name: dep.name,
+        qname: `${m.ecosystem}:${dep.name}`,
+        props: { ecosystem: m.ecosystem, version: dep.version, isDev: dep.isDev },
+      });
       g.addEdge('depends_on', pkgId, extId, { props: { isDev: dep.isDev } });
     }
   }

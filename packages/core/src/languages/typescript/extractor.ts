@@ -18,8 +18,13 @@ import {
 const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'all', 'use', 'route', 'ws']);
 const NEST_METHOD_DECORATORS = new Set(['Get', 'Post', 'Put', 'Delete', 'Patch', 'Options', 'Head', 'All']);
 const FUNCTION_TYPES = new Set([
-  'function_declaration', 'generator_function_declaration', 'function_expression', 'function', 'arrow_function',
-  'generator_function', 'method_definition',
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'function',
+  'arrow_function',
+  'generator_function',
+  'method_definition',
 ]);
 
 interface Scope {
@@ -268,8 +273,10 @@ class Walker {
     const heritage = n.namedChildren.find((c) => c.type === 'class_heritage');
     if (heritage) {
       for (const h of heritage.namedChildren) {
-        if (h.type === 'extends_clause') for (const v of h.namedChildren) if (v.type !== 'type_arguments') decl.extends!.push(dottedText(v));
-        if (h.type === 'implements_clause') for (const v of h.namedChildren) decl.implements!.push(dottedText(v).replace(/<.*$/, ''));
+        if (h.type === 'extends_clause')
+          for (const v of h.namedChildren) if (v.type !== 'type_arguments') decl.extends!.push(dottedText(v));
+        if (h.type === 'implements_clause')
+          for (const v of h.namedChildren) decl.implements!.push(dottedText(v).replace(/<.*$/, ''));
       }
     }
     for (const d of this.decoratorsOf(n)) {
@@ -281,7 +288,8 @@ class Walker {
       }
     }
     this.facts.decls.push(decl);
-    if (exported) this.facts.exports.push({ name: forcedName === 'default' ? 'default' : name, local: name, span: decl.span });
+    if (exported)
+      this.facts.exports.push({ name: forcedName === 'default' ? 'default' : name, local: name, span: decl.span });
     const body = field(n, 'body');
     const savedPrefix = this.controllerPrefix;
     if (body) this.visitChildren(body, { qname }, false, qname);
@@ -308,7 +316,13 @@ class Walker {
     if (exported) this.facts.exports.push({ name, span: decl.span });
   }
 
-  private functionDecl(n: SyntaxNode, scope: Scope, exported: boolean, kind: 'function' | 'method', classQname: string | undefined): void {
+  private functionDecl(
+    n: SyntaxNode,
+    scope: Scope,
+    exported: boolean,
+    kind: 'function' | 'method',
+    classQname: string | undefined,
+  ): void {
     const nameNode = field(n, 'name');
     const name = nameNode?.text ?? `anonymous${++this.anonCounter}`;
     this.functionLike(n, name, scope, exported, kind, n, classQname);
@@ -325,7 +339,9 @@ class Walker {
   ): void {
     const qname = this.q(scope, name);
     const params = field(fn, 'parameters');
-    const paramNames = params ? params.namedChildren.map((p) => (field(p, 'pattern') ?? p).text.replace(/\s+/g, ' ').slice(0, 40)) : [];
+    const paramNames = params
+      ? params.namedChildren.map((p) => (field(p, 'pattern') ?? p).text.replace(/\s+/g, ' ').slice(0, 40))
+      : [];
     const decl: DeclFact = {
       kind,
       name,
@@ -380,10 +396,22 @@ class Walker {
         if (v.type === 'await_expression' && v.namedChildren[0]) v = v.namedChildren[0];
         if (v.type === 'new_expression') {
           const ctor = field(v, 'constructor');
-          if (ctor) this.facts.bindings.push({ name: nameNode.text, scopeQname: scope.qname, ref: dottedText(ctor), isNew: true });
+          if (ctor)
+            this.facts.bindings.push({
+              name: nameNode.text,
+              scopeQname: scope.qname,
+              ref: dottedText(ctor),
+              isNew: true,
+            });
         } else if (v.type === 'call_expression') {
           const fn = field(v, 'function');
-          if (fn && (fn.type === 'identifier' || fn.type === 'member_expression')) this.facts.bindings.push({ name: nameNode.text, scopeQname: scope.qname, ref: dottedText(fn), isNew: false });
+          if (fn && (fn.type === 'identifier' || fn.type === 'member_expression'))
+            this.facts.bindings.push({
+              name: nameNode.text,
+              scopeQname: scope.qname,
+              ref: dottedText(fn),
+              isNew: false,
+            });
         }
       }
       // require() import
@@ -394,7 +422,8 @@ class Walker {
           if (nameNode.type === 'identifier') imp.namespace = nameNode.text;
           else if (nameNode.type === 'object_pattern') {
             for (const p of nameNode.namedChildren) {
-              if (p.type === 'shorthand_property_identifier_pattern') imp.names.push({ imported: p.text, local: p.text });
+              if (p.type === 'shorthand_property_identifier_pattern')
+                imp.names.push({ imported: p.text, local: p.text });
               else if (p.type === 'pair_pattern') {
                 const k = field(p, 'key')?.text;
                 const v = field(p, 'value')?.text;
@@ -463,7 +492,14 @@ class Walker {
           }
           const method = prop === 'use' ? 'USE' : prop === 'all' || prop === 'route' ? 'ANY' : prop.toUpperCase();
           if (prop !== 'use' || argCount > 1) {
-            this.facts.endpoints.push({ method, path: p, framework: this.guessFramework(), handlerRef, enclosingQname: scope.qname, span });
+            this.facts.endpoints.push({
+              method,
+              path: p,
+              framework: this.guessFramework(),
+              handlerRef,
+              enclosingQname: scope.qname,
+              span,
+            });
           }
         }
       }
@@ -479,9 +515,18 @@ class Walker {
           const v = field(pair, 'value');
           if (k === 'method') method = stringValue(v) ?? 'ANY';
           if (k === 'url' || k === 'path') url = stringValue(v);
-          if (k === 'handler' && v) handlerRef = v.type === 'identifier' || v.type === 'member_expression' ? dottedText(v) : undefined;
+          if (k === 'handler' && v)
+            handlerRef = v.type === 'identifier' || v.type === 'member_expression' ? dottedText(v) : undefined;
         }
-        if (url) this.facts.endpoints.push({ method: method.toUpperCase(), path: url, framework: 'fastify', handlerRef, enclosingQname: scope.qname, span });
+        if (url)
+          this.facts.endpoints.push({
+            method: method.toUpperCase(),
+            path: url,
+            framework: 'fastify',
+            handlerRef,
+            enclosingQname: scope.qname,
+            span,
+          });
       }
     }
   }
@@ -496,16 +541,34 @@ class Walker {
     const p = this.ctx.path;
     const m1 = /(^|\/)pages\/api\/(.+)\.[cm]?[jt]sx?$/.exec(p);
     if (m1) {
-      const route = '/api/' + m1[2].replace(/\/index$/, '').replace(/\[\.\.\.(\w+)\]/g, '*$1').replace(/\[(\w+)\]/g, ':$1');
+      const route = `/api/${m1[2]
+        .replace(/\/index$/, '')
+        .replace(/\[\.\.\.(\w+)\]/g, '*$1')
+        .replace(/\[(\w+)\]/g, ':$1')}`;
       const handler = this.facts.exports.find((e) => e.name === 'default');
-      this.facts.endpoints.push({ method: 'ANY', path: route === '/api/index' ? '/api' : route, framework: 'nextjs', handlerRef: handler?.local, span: { file: p, startLine: 1, startCol: 0, endLine: 1, endCol: 0 } });
+      this.facts.endpoints.push({
+        method: 'ANY',
+        path: route === '/api/index' ? '/api' : route,
+        framework: 'nextjs',
+        handlerRef: handler?.local,
+        span: { file: p, startLine: 1, startCol: 0, endLine: 1, endCol: 0 },
+      });
     }
     const m2 = /(^|\/)app\/(.*?)\/?route\.[cm]?[jt]sx?$/.exec(p);
     if (m2) {
-      const route = '/' + m2[2].replace(/\(.*?\)\/?/g, '').replace(/\[\.\.\.(\w+)\]/g, '*$1').replace(/\[(\w+)\]/g, ':$1');
+      const route = `/${m2[2]
+        .replace(/\(.*?\)\/?/g, '')
+        .replace(/\[\.\.\.(\w+)\]/g, '*$1')
+        .replace(/\[(\w+)\]/g, ':$1')}`;
       for (const e of this.facts.exports) {
         if (['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'].includes(e.name)) {
-          this.facts.endpoints.push({ method: e.name, path: route, framework: 'nextjs', handlerRef: e.local ?? e.name, span: e.span });
+          this.facts.endpoints.push({
+            method: e.name,
+            path: route,
+            framework: 'nextjs',
+            handlerRef: e.local ?? e.name,
+            span: e.span,
+          });
         }
       }
     }

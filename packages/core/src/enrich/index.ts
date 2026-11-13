@@ -7,7 +7,21 @@ import type { GraphBuilder } from '../graph/builder.js';
 import { ids } from '../graph/ids.js';
 import type { Discovery } from '../pipeline/discover.js';
 
-const SOURCE_LANGS = new Set(['typescript', 'tsx', 'javascript', 'python', 'go', 'rust', 'java', 'kotlin', 'csharp', 'ruby', 'php', 'c', 'cpp']);
+const SOURCE_LANGS = new Set([
+  'typescript',
+  'tsx',
+  'javascript',
+  'python',
+  'go',
+  'rust',
+  'java',
+  'kotlin',
+  'csharp',
+  'ruby',
+  'php',
+  'c',
+  'cpp',
+]);
 
 export interface EnrichResult {
   diagnostics: Diagnostic[];
@@ -20,7 +34,12 @@ export function enrich(g: GraphBuilder, d: Discovery): EnrichResult {
   const fileGraph = buildFileGraph(g);
   computePagerank(g, fileGraph);
   const subsystems = inferSubsystems(g, fileGraph);
-  const diagnostics = [...findCycles(g, fileGraph), ...findDeadCode(g), ...findGodModules(g), ...findOrphans(g, fileGraph)];
+  const diagnostics = [
+    ...findCycles(g, fileGraph),
+    ...findDeadCode(g),
+    ...findGodModules(g),
+    ...findOrphans(g, fileGraph),
+  ];
   return { diagnostics, subsystems };
 }
 
@@ -36,7 +55,15 @@ function markEntryPoints(g: GraphBuilder, d: Discovery): void {
   }
   for (const m of d.manifests) {
     const bins = m.extra.bin;
-    const mains = [m.extra.main, m.extra.module, ...(typeof bins === 'string' ? [bins] : bins && typeof bins === 'object' ? Object.values(bins as Record<string, string>) : [])];
+    const mains = [
+      m.extra.main,
+      m.extra.module,
+      ...(typeof bins === 'string'
+        ? [bins]
+        : bins && typeof bins === 'object'
+          ? Object.values(bins as Record<string, string>)
+          : []),
+    ];
     for (const rel of mains) {
       if (typeof rel !== 'string') continue;
       const p = path.posix.normalize(path.posix.join(m.dir, rel));
@@ -176,13 +203,23 @@ function inferSubsystems(g: GraphBuilder, fg: Graph): number {
   let count = 0;
   for (const [, list] of [...groups.entries()].sort((a, b) => b[1].length - a[1].length)) {
     let label = commonDirPrefix(list.map((f) => f.file ?? ''));
-    if (!label || usedLabels.has(label)) label = dominantDir(list.map((f) => f.file ?? ''), label);
+    if (!label || usedLabels.has(label))
+      label = dominantDir(
+        list.map((f) => f.file ?? ''),
+        label,
+      );
     if (!label) label = 'core';
     const seen = usedLabels.get(label) ?? 0;
     usedLabels.set(label, seen + 1);
     if (seen > 0) label = `${label} #${seen + 1}`;
     const id = ids.subsystem(label);
-    g.addNode({ id, kind: 'subsystem', name: label, qname: label, props: { memberCount: list.length, inferred: true } });
+    g.addNode({
+      id,
+      kind: 'subsystem',
+      name: label,
+      qname: label,
+      props: { memberCount: list.length, inferred: true },
+    });
     for (const f of list) {
       g.addEdge('member_of', f.id, id);
       f.props.subsystem = id;
@@ -268,7 +305,11 @@ function findCycles(g: GraphBuilder, fg: Graph): Diagnostic[] {
       title: `Import cycle of ${comp.length} files`,
       nodeIds: comp,
       severity: comp.length > 5 ? ('error' as const) : ('warn' as const),
-      detail: comp.map((id) => g.getNode(id)?.file).filter(Boolean).slice(0, 8).join(' → '),
+      detail: comp
+        .map((id) => g.getNode(id)?.file)
+        .filter(Boolean)
+        .slice(0, 8)
+        .join(' → '),
     }));
 }
 
@@ -283,7 +324,13 @@ function findDeadCode(g: GraphBuilder): Diagnostic[] {
     if (/^(main|default|handler|setup|teardown|app|config|router|create[A-Z]\w*Plugin)$/.test(n.name)) continue;
     if ((n.metrics?.fanIn ?? 0) > 0) continue;
     if (g.inEdges(n.id).some((e) => e.kind === 'exposes')) continue;
-    out.push({ type: 'dead-code', title: `${n.name} has no references`, nodeIds: [n.id], severity: 'info', detail: `${n.kind} in ${n.file}` });
+    out.push({
+      type: 'dead-code',
+      title: `${n.name} has no references`,
+      nodeIds: [n.id],
+      severity: 'info',
+      detail: `${n.kind} in ${n.file}`,
+    });
   }
   return out.slice(0, 500);
 }
@@ -291,7 +338,9 @@ function findDeadCode(g: GraphBuilder): Diagnostic[] {
 function findGodModules(g: GraphBuilder): Diagnostic[] {
   const files = g.nodesOfKind('file').filter((f) => f.metrics);
   if (files.length < 20) return [];
-  const scored = files.map((f) => ({ f, s: (f.metrics!.fanIn ?? 0) + (f.metrics!.fanOut ?? 0) })).sort((a, b) => b.s - a.s);
+  const scored = files
+    .map((f) => ({ f, s: (f.metrics!.fanIn ?? 0) + (f.metrics!.fanOut ?? 0) }))
+    .sort((a, b) => b.s - a.s);
   const cutoff = Math.max(1, Math.floor(files.length * 0.02));
   return scored
     .slice(0, cutoff)

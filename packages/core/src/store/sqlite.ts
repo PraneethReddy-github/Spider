@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import type { GraphEdge, GraphNode } from '@spider/shared';
+import Database from 'better-sqlite3';
 import { GraphBuilder } from '../graph/builder.js';
 
 const SCHEMA = `
@@ -52,7 +52,9 @@ export class SqliteStore {
 
   saveGraph(g: GraphBuilder, meta: Record<string, unknown>): void {
     const db = this.db;
-    const insNode = db.prepare('INSERT OR REPLACE INTO nodes VALUES (@id,@kind,@name,@qname,@file,@language,@parent_id,@start_line,@end_line,@data)');
+    const insNode = db.prepare(
+      'INSERT OR REPLACE INTO nodes VALUES (@id,@kind,@name,@qname,@file,@language,@parent_id,@start_line,@end_line,@data)',
+    );
     const insEdge = db.prepare('INSERT OR REPLACE INTO edges VALUES (@id,@kind,@src,@dst,@weight,@confidence,@data)');
     const insMeta = db.prepare('INSERT OR REPLACE INTO meta VALUES (?, ?)');
     db.transaction(() => {
@@ -72,7 +74,15 @@ export class SqliteStore {
         });
       }
       for (const e of g.edges.values()) {
-        insEdge.run({ id: e.id, kind: e.kind, src: e.src, dst: e.dst, weight: e.weight, confidence: e.confidence, data: JSON.stringify(e.props) });
+        insEdge.run({
+          id: e.id,
+          kind: e.kind,
+          src: e.src,
+          dst: e.dst,
+          weight: e.weight,
+          confidence: e.confidence,
+          data: JSON.stringify(e.props),
+        });
       }
       for (const [k, v] of Object.entries(meta)) insMeta.run(k, JSON.stringify(v));
     })();
@@ -83,7 +93,11 @@ export class SqliteStore {
     const nodeRows = this.db.prepare('SELECT * FROM nodes').all() as Array<Record<string, unknown>>;
     // Insert without auto-contains edges (they're persisted explicitly).
     for (const r of nodeRows) {
-      const data = JSON.parse(r.data as string) as { span?: GraphNode['span']; metrics?: GraphNode['metrics']; props: Record<string, unknown> };
+      const data = JSON.parse(r.data as string) as {
+        span?: GraphNode['span'];
+        metrics?: GraphNode['metrics'];
+        props: Record<string, unknown>;
+      };
       const node: GraphNode = {
         id: r.id as string,
         kind: r.kind as GraphNode['kind'],
@@ -119,7 +133,8 @@ export class SqliteStore {
       }
     }
     const meta: Record<string, unknown> = {};
-    for (const r of this.db.prepare('SELECT key, value FROM meta').all() as Array<{ key: string; value: string }>) meta[r.key] = JSON.parse(r.value);
+    for (const r of this.db.prepare('SELECT key, value FROM meta').all() as Array<{ key: string; value: string }>)
+      meta[r.key] = JSON.parse(r.value);
     return { graph: g, meta };
   }
 }

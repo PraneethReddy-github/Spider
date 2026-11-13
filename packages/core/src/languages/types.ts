@@ -123,9 +123,24 @@ export function countLoc(source: string): number {
 }
 
 export const BRANCH_TYPES = new Set([
-  'if_statement', 'for_statement', 'for_in_statement', 'while_statement', 'do_statement', 'switch_case', 'case_clause',
-  'catch_clause', 'ternary_expression', 'conditional_expression', 'elif_clause', 'except_clause', 'with_statement',
-  'list_comprehension', 'match_statement', 'case_pattern', 'binary_expression', 'boolean_operator',
+  'if_statement',
+  'for_statement',
+  'for_in_statement',
+  'while_statement',
+  'do_statement',
+  'switch_case',
+  'case_clause',
+  'catch_clause',
+  'ternary_expression',
+  'conditional_expression',
+  'elif_clause',
+  'except_clause',
+  'with_statement',
+  'list_comprehension',
+  'match_statement',
+  'case_pattern',
+  'binary_expression',
+  'boolean_operator',
 ]);
 
 /** Approximate cyclomatic complexity: 1 + branching constructs (&&/|| counted for binary ops). */

@@ -5,6 +5,7 @@ import type {
   GraphEdge,
   GraphNode,
   NodeDetail,
+  Projection,
   ProjectionRequest,
   SearchHit,
   SubGraph,
@@ -12,7 +13,15 @@ import type {
 import type { GraphBuilder } from '../graph/builder.js';
 
 const STRUCTURAL: Set<EdgeKind> = new Set(['contains', 'member_of', 'exports']);
-const DEFAULT_EDGE_KINDS: EdgeKind[] = ['imports', 'calls', 'instantiates', 'extends', 'implements', 'exposes', 'depends_on'];
+const DEFAULT_EDGE_KINDS: EdgeKind[] = [
+  'imports',
+  'calls',
+  'instantiates',
+  'extends',
+  'implements',
+  'exposes',
+  'depends_on',
+];
 const MAX_NODES = 6000;
 
 export class QueryService {
@@ -27,7 +36,7 @@ export class QueryService {
    * Computes the visible node set for a view level plus explicitly expanded containers, then rolls
    * every relationship edge up to the nearest visible ancestor on both ends.
    */
-  projection(req: ProjectionRequest): SubGraph {
+  projection(req: ProjectionRequest): Projection {
     const g = this.g;
     const expanded = new Set(req.expanded ?? []);
     const edgeKinds = new Set(req.edgeKinds ?? DEFAULT_EDGE_KINDS);
@@ -39,7 +48,7 @@ export class QueryService {
     const visible = new Map<string, GraphNode>();
     const childCount = new Map<string, number>();
     const parentOf = new Map<string, string>(); // visible-parent mapping for the current view
-    let truncated = false;
+    let overflow = 0; // nodes that would have been visible beyond MAX_NODES
 
     const isAutoExpanded = (n: GraphNode): boolean => {
       if (expanded.has(n.id)) return true;
@@ -64,12 +73,12 @@ export class QueryService {
 
     // L0 uses subsystems as top-level containers (via member_of).
     const walk = (n: GraphNode, parent: string | undefined) => {
-      if (visible.size >= MAX_NODES) {
-        truncated = true;
-        return;
-      }
       let kids: GraphNode[];
-      if (n.kind === 'subsystem') kids = g.inEdges(n.id, 'member_of').map((e) => g.getNode(e.src)!).filter(Boolean);
+      if (n.kind === 'subsystem')
+        kids = g
+          .inEdges(n.id, 'member_of')
+          .map((e) => g.getNode(e.src)!)
+          .filter(Boolean);
       else kids = g.children(n.id);
       kids = kids.filter(acceptNode);
       // At L3 classes are groups: the class stays visible with its members inside it.
@@ -77,6 +86,12 @@ export class QueryService {
       if (!explicit && isAutoExpanded(n) && kids.length > 0) {
         // auto-expanded container disappears; its children take its place under the same view parent
         for (const k of kids) walk(k, parent);
+        return;
+      }
+      if (visible.size >= MAX_NODES) {
+        // keep counting so the truncation reason can state the real size
+        overflow++;
+        if (explicit) for (const k of kids) walk(k, n.id);
         return;
       }
       visible.set(n.id, n);
@@ -89,7 +104,8 @@ export class QueryService {
     };
 
     const root = g.getNode('repo');
-    if (!root) return { nodes: [], edges: [] };
+    if (!root)
+      return { nodes: [], edges: [], meta: { level: req.level, total: 0, truncated: false, stats: statsOf([], []) } };
     if (req.level === 'L0') {
       const subs = g.nodesOfKind('subsystem');
       if (subs.length === 0) {
@@ -164,7 +180,15 @@ export class QueryService {
       const key = `${e.kind}|${s}|${t}`;
       let a = agg.get(key);
       if (!a) {
-        a = { id: key, kind: e.kind, src: s, dst: t, weight: 0, confidence: 0, props: { leafCount: 0, ambiguous: e.props.ambiguous ?? false } };
+        a = {
+          id: key,
+          kind: e.kind,
+          src: s,
+          dst: t,
+          weight: 0,
+          confidence: 0,
+          props: { leafCount: 0, ambiguous: e.props.ambiguous ?? false },
+        };
         agg.set(key, a);
       }
       a.weight += e.weight;
@@ -177,13 +201,36 @@ export class QueryService {
       const n = g.getNode(x);
       if (n) visible.set(x, n);
     }
-    const edges = [...agg.values()].filter((e) => (req.minWeight ? e.weight >= req.minWeight : true));
+    let edges = [...agg.values()].filter((e) => (req.minWeight ? e.weight >= req.minWeight : true));
+
+    let focus: string | undefined;
+    if (req.focus) {
+      focus = visible.has(req.focus) ? req.focus : representative(req.focus);
+      const keep = focus ? focusSet(focus, Math.min(6, Math.max(0, req.focusDepth ?? 1)), edges, parentOf) : new Set();
+      for (const id of [...visible.keys()]) if (!keep.has(id)) visible.delete(id);
+      edges = edges.filter((e) => keep.has(e.src) && keep.has(e.dst));
+    }
 
     const nodes = [...visible.values()].map((n) => ({
       ...n,
       props: { ...n.props, childCount: childCount.get(n.id) ?? 0, viewParent: parentOf.get(n.id) },
     }));
-    return { nodes, edges, meta: { truncated, level: req.level, total: this.g.nodes.size } };
+    const truncated = overflow > 0;
+    const truncatedReason = truncated
+      ? `Showing first ${MAX_NODES.toLocaleString('en-US')} of ${(MAX_NODES + overflow).toLocaleString('en-US')} nodes. Collapse containers or use filters.`
+      : undefined;
+    return {
+      nodes,
+      edges,
+      meta: {
+        level: req.level,
+        total: this.g.nodes.size,
+        truncated,
+        truncatedReason,
+        focus,
+        stats: statsOf(nodes, edges),
+      },
+    };
   }
 
   /* ---------- neighbourhood queries ---------- */
@@ -193,7 +240,12 @@ export class QueryService {
     return list.filter((e) => !STRUCTURAL.has(e.kind) && (!kinds || kinds.has(e.kind)));
   }
 
-  neighborhood(id: string, direction: 'in' | 'out' | 'both', depth: number, kinds?: EdgeKind[]): SubGraph & { distances: Record<string, number> } {
+  neighborhood(
+    id: string,
+    direction: 'in' | 'out' | 'both',
+    depth: number,
+    kinds?: EdgeKind[],
+  ): SubGraph & { distances: Record<string, number> } {
     const ks = kinds ? new Set(kinds) : undefined;
     const start = this.g.getNode(id);
     if (!start) return { nodes: [], edges: [], distances: {} };
@@ -220,7 +272,12 @@ export class QueryService {
       frontier = next;
     }
     const nodes = [...dist.keys()].map((n) => this.g.getNode(n)!).filter(Boolean);
-    return { nodes, edges: [...edges.values()], distances: Object.fromEntries(dist), meta: { root: id, direction, depth } };
+    return {
+      nodes,
+      edges: [...edges.values()],
+      distances: Object.fromEntries(dist),
+      meta: { root: id, direction, depth },
+    };
   }
 
   upstream(id: string, depth = 3, kinds?: EdgeKind[]) {
@@ -231,30 +288,48 @@ export class QueryService {
     return this.neighborhood(id, 'out', depth, kinds);
   }
 
-  /** Shortest directed path (following relationship edges) from a to b; falls back to undirected. */
+  /**
+   * Shortest directed path (following relationship edges) from a to b; falls back to undirected.
+   * Container endpoints (directories, files, classes, subsystems) stand for everything inside them,
+   * because their relationships only exist on their contents.
+   */
   path(from: string, to: string, kinds?: EdgeKind[]): SubGraph {
     const ks = kinds ? new Set(kinds) : undefined;
+    const sources = this.selfAndDescendants(from);
+    let targets = new Set(this.selfAndDescendants(to));
+    const srcSet = new Set(sources);
+    const disjoint = new Set([...targets].filter((t) => !srcSet.has(t)));
+    if (disjoint.size > 0) targets = disjoint;
     const search = (undirected: boolean): SubGraph | undefined => {
-      const prev = new Map<string, { node: string; edge: GraphEdge } | null>([[from, null]]);
-      const queue = [from];
-      while (queue.length) {
-        const cur = queue.shift()!;
-        if (cur === to) break;
+      const prev = new Map<string, { node: string; edge: GraphEdge } | null>(sources.map((s) => [s, null]));
+      const queue = [...sources];
+      let hit: string | undefined;
+      for (let i = 0; i < queue.length && !hit; i++) {
+        const cur = queue[i];
+        if (targets.has(cur)) {
+          hit = cur;
+          break;
+        }
         const es = [...this.relEdges(cur, 'out', ks), ...(undirected ? this.relEdges(cur, 'in', ks) : [])];
         for (const e of es) {
           const other = e.src === cur ? e.dst : e.src;
           if (prev.has(other)) continue;
           prev.set(other, { node: cur, edge: e });
+          if (targets.has(other)) {
+            hit = other;
+            break;
+          }
           queue.push(other);
         }
         if (prev.size > 200000) break;
       }
-      if (!prev.has(to)) return undefined;
+      if (!hit) return undefined;
       const nodes: GraphNode[] = [];
       const edges: GraphEdge[] = [];
-      let cur: string | undefined = to;
+      let cur: string | undefined = hit;
       while (cur) {
-        nodes.unshift(this.g.getNode(cur)!);
+        const n = this.g.getNode(cur);
+        if (n) nodes.unshift(n);
         const p = prev.get(cur);
         if (!p) break;
         edges.unshift(p.edge);
@@ -263,6 +338,27 @@ export class QueryService {
       return { nodes, edges, meta: { undirected } };
     };
     return search(false) ?? search(true) ?? { nodes: [], edges: [], meta: { found: false } };
+  }
+
+  /** The node plus everything contained in it (subsystems include their member files' contents). */
+  private selfAndDescendants(id: string): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop() as string;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      out.push(cur);
+      const n = this.g.getNode(cur);
+      if (!n) continue;
+      const kids =
+        n.kind === 'subsystem'
+          ? this.g.inEdges(cur, 'member_of').map((e) => e.src)
+          : this.g.children(cur).map((c) => c.id);
+      for (const k of kids) stack.push(k);
+    }
+    return out;
   }
 
   /* ---------- lookups ---------- */
@@ -289,7 +385,10 @@ export class QueryService {
       .slice(0, limit)
       .map((e) => mapEdge(e, e.dst))
       .filter((x) => x.node);
-    const children = node.kind === 'subsystem' ? this.g.inEdges(id, 'member_of').map((e) => this.g.getNode(e.src)!) : this.g.children(id);
+    const children =
+      node.kind === 'subsystem'
+        ? this.g.inEdges(id, 'member_of').map((e) => this.g.getNode(e.src)!)
+        : this.g.children(id);
     return { node, parents: this.g.ancestors(id), incoming, outgoing, children: children.slice(0, 500) };
   }
 
@@ -324,10 +423,10 @@ export class QueryService {
       .filter((ep) => includeTests || !ep.props.isTest)
       .sort((a, b) => String(a.props.path).localeCompare(String(b.props.path)) || a.name.localeCompare(b.name))
       .map((ep) => {
-      const handlerEdge = this.g.outEdges(ep.id, 'exposes')[0];
-      const handler = handlerEdge ? this.g.getNode(handlerEdge.dst) : undefined;
-      const trace = this.trace(ep.id, 6);
-      return { node: ep, handler, traceDepth: Math.max(0, ...Object.values(trace.distances)) };
+        const handlerEdge = this.g.outEdges(ep.id, 'exposes')[0];
+        const handler = handlerEdge ? this.g.getNode(handlerEdge.dst) : undefined;
+        const trace = this.trace(ep.id, 6);
+        return { node: ep, handler, traceDepth: Math.max(0, ...Object.values(trace.distances)) };
       });
   }
 
@@ -360,7 +459,51 @@ export class QueryService {
   }
 }
 
-const KIND_ORDER: Record<string, number> = { directory: 0, package: 1, file: 2, class: 3, function: 4, method: 5, variable: 6, type: 7, endpoint: 8 };
+/** Nodes within `depth` undirected hops of `start` over `edges`, plus their view-parent ancestors. */
+function focusSet(start: string, depth: number, edges: GraphEdge[], parentOf: Map<string, string>): Set<string> {
+  const adj = new Map<string, string[]>();
+  const link = (a: string, b: string) => {
+    let l = adj.get(a);
+    if (!l) adj.set(a, (l = []));
+    l.push(b);
+  };
+  for (const e of edges) {
+    link(e.src, e.dst);
+    link(e.dst, e.src);
+  }
+  const keep = new Set([start]);
+  let frontier = [start];
+  for (let d = 0; d < depth && frontier.length; d++) {
+    const next: string[] = [];
+    for (const id of frontier)
+      for (const o of adj.get(id) ?? [])
+        if (!keep.has(o)) {
+          keep.add(o);
+          next.push(o);
+        }
+    frontier = next;
+  }
+  for (const id of [...keep]) for (let p = parentOf.get(id); p && !keep.has(p); p = parentOf.get(p)) keep.add(p);
+  return keep;
+}
+
+function statsOf(nodes: GraphNode[], edges: GraphEdge[]) {
+  const byKind: Record<string, number> = {};
+  for (const n of nodes) byKind[n.kind] = (byKind[n.kind] ?? 0) + 1;
+  return { nodes: nodes.length, edges: edges.length, byKind };
+}
+
+const KIND_ORDER: Record<string, number> = {
+  directory: 0,
+  package: 1,
+  file: 2,
+  class: 3,
+  function: 4,
+  method: 5,
+  variable: 6,
+  type: 7,
+  endpoint: 8,
+};
 function sortTree(a: GraphNode, b: GraphNode): number {
   const ka = KIND_ORDER[a.kind] ?? 9;
   const kb = KIND_ORDER[b.kind] ?? 9;

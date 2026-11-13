@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 
 /** Deterministic, short, url-safe id from a list of parts. */
 export function makeId(...parts: (string | number | undefined)[]): string {
-  const h = createHash('sha1').update(parts.map((p) => String(p ?? '')).join(' ')).digest('base64url');
+  const h = createHash('sha1')
+    .update(parts.map((p) => String(p ?? '')).join(' '))
+    .digest('base64url');
   return h.slice(0, 16);
 }
 

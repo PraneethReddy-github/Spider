@@ -2,53 +2,21 @@
  * @spider/shared — graph model and API contract shared by core, server, cli and web.
  */
 
-export type NodeKind =
-  | 'repository'
-  | 'subsystem'
-  | 'package'
-  | 'directory'
-  | 'file'
-  | 'module'
-  | 'namespace'
-  | 'class'
-  | 'function'
-  | 'method'
-  | 'variable'
-  | 'type'
-  | 'endpoint'
-  | 'external'
-  | 'datastore'
-  | 'config';
+import type { EdgeKind, NodeKind } from './kinds.js';
 
-export type EdgeKind =
-  | 'contains'
-  | 'imports'
-  | 'exports'
-  | 'calls'
-  | 'instantiates'
-  | 'extends'
-  | 'implements'
-  | 'references'
-  | 'exposes'
-  | 'depends_on'
-  | 'reads'
-  | 'writes'
-  | 'configures'
-  | 'member_of'
-  | 'dep_aggregate';
-
-export const NODE_KINDS: NodeKind[] = [
-  'repository', 'subsystem', 'package', 'directory', 'file', 'module', 'namespace', 'class',
-  'function', 'method', 'variable', 'type', 'endpoint', 'external', 'datastore', 'config',
-];
-
-export const EDGE_KINDS: EdgeKind[] = [
-  'contains', 'imports', 'exports', 'calls', 'instantiates', 'extends', 'implements', 'references',
-  'exposes', 'depends_on', 'reads', 'writes', 'configures', 'member_of', 'dep_aggregate',
-];
+export * from './kinds.js';
 
 /** Kinds that act as containers in the hierarchy. */
-export const CONTAINER_KINDS: NodeKind[] = ['repository', 'subsystem', 'package', 'directory', 'file', 'module', 'namespace', 'class'];
+export const CONTAINER_KINDS: NodeKind[] = [
+  'repository',
+  'subsystem',
+  'package',
+  'directory',
+  'file',
+  'module',
+  'namespace',
+  'class',
+];
 
 /** Symbol-level kinds. */
 export const SYMBOL_KINDS: NodeKind[] = ['class', 'function', 'method', 'variable', 'type', 'endpoint'];
@@ -101,7 +69,11 @@ export interface SubGraph {
   meta?: Record<string, unknown>;
 }
 
-export interface LanguageStat { language: string; files: number; loc: number }
+export interface LanguageStat {
+  language: string;
+  files: number;
+  loc: number;
+}
 
 export interface RepoStats {
   nodes: number;
@@ -110,10 +82,16 @@ export interface RepoStats {
   loc: number;
   languages: LanguageStat[];
   frameworks: string[];
+  /** Node counts by kind; `endpoint` excludes endpoints declared in test files. */
   byNodeKind: Partial<Record<NodeKind, number>>;
   byEdgeKind: Partial<Record<EdgeKind, number>>;
+  /** Endpoints declared in test files (not included in `byNodeKind.endpoint`). */
+  endpointsInTests: number;
   unresolvedImports: number;
+  /** Calls whose head is a local or imported name that failed to bind to a repo symbol. */
   unresolvedCalls: number;
+  /** Calls into libraries (head is an external import or an instance of an external type). */
+  externalCalls: number;
 }
 
 export interface RepoInfo {
@@ -140,6 +118,33 @@ export interface ProjectionRequest {
   includeTests?: boolean;
   minConfidence?: number;
   minWeight?: number;
+  /** Node id: keep only nodes within `focusDepth` undirected hops of its visible representative. */
+  focus?: string;
+  /** Hops around `focus` (default 1, max 6). */
+  focusDepth?: number;
+}
+
+export interface ProjectionStats {
+  nodes: number;
+  edges: number;
+  byKind: Record<string, number>;
+}
+
+export interface ProjectionMeta {
+  level: ViewLevel;
+  /** Total nodes in the stored graph. */
+  total: number;
+  truncated: boolean;
+  truncatedReason?: string;
+  /** Visible representative of the requested focus node (absent when no focus or not visible). */
+  focus?: string;
+  stats: ProjectionStats;
+}
+
+export interface Projection {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  meta: ProjectionMeta;
 }
 
 export interface SearchHit {
@@ -180,3 +185,5 @@ export interface Diagnostic {
   severity: 'info' | 'warn' | 'error';
   detail?: string;
 }
+
+export * from './schemas.js';

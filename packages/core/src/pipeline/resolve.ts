@@ -7,7 +7,10 @@ import type { Discovery } from './discover.js';
 
 export interface ResolveStats {
   unresolvedImports: number;
+  /** Calls whose head is a local or imported name that failed to bind to a repo symbol. */
   unresolvedCalls: number;
+  /** Calls into libraries: head is an external import or an instance of an external type. */
+  externalCalls: number;
   resolvedImports: number;
   resolvedCalls: number;
   ambiguousCalls: number;
@@ -16,32 +19,246 @@ export interface ResolveStats {
 const JS_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.d.ts', '.vue', '.svelte', '.json'];
 
 const JS_BUILTINS = new Set([
-  'console', 'JSON', 'Math', 'Object', 'Array', 'Promise', 'String', 'Number', 'Boolean', 'Date', 'Error', 'Map', 'Set',
-  'WeakMap', 'Symbol', 'Reflect', 'Proxy', 'parseInt', 'parseFloat', 'setTimeout', 'setInterval', 'clearTimeout',
-  'clearInterval', 'require', 'process', 'Buffer', 'window', 'document', 'globalThis', 'RegExp', 'Intl', 'fetch',
-  'encodeURIComponent', 'decodeURIComponent', 'isNaN', 'isFinite', 'Number', 'BigInt', 'structuredClone', 'queueMicrotask',
-  'super', 'describe', 'it', 'test', 'expect', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+  'console',
+  'JSON',
+  'Math',
+  'Object',
+  'Array',
+  'Promise',
+  'String',
+  'Number',
+  'Boolean',
+  'Date',
+  'Error',
+  'Map',
+  'Set',
+  'WeakMap',
+  'Symbol',
+  'Reflect',
+  'Proxy',
+  'parseInt',
+  'parseFloat',
+  'setTimeout',
+  'setInterval',
+  'clearTimeout',
+  'clearInterval',
+  'require',
+  'process',
+  'Buffer',
+  'window',
+  'document',
+  'globalThis',
+  'RegExp',
+  'Intl',
+  'fetch',
+  'encodeURIComponent',
+  'decodeURIComponent',
+  'isNaN',
+  'isFinite',
+  'Number',
+  'BigInt',
+  'structuredClone',
+  'queueMicrotask',
+  'super',
+  'describe',
+  'it',
+  'test',
+  'expect',
+  'beforeEach',
+  'afterEach',
+  'beforeAll',
+  'afterAll',
 ]);
 const PY_BUILTINS = new Set([
-  'print', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'set', 'tuple', 'range', 'enumerate', 'zip', 'map',
-  'filter', 'sorted', 'reversed', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr', 'delattr', 'type', 'super',
-  'open', 'iter', 'next', 'min', 'max', 'sum', 'abs', 'round', 'any', 'all', 'repr', 'format', 'id', 'hash', 'input',
-  'vars', 'dir', 'callable', 'ord', 'chr', 'bytes', 'bytearray', 'object', 'property', 'staticmethod', 'classmethod',
-  'Exception', 'ValueError', 'TypeError', 'KeyError', 'RuntimeError', 'NotImplementedError', 'AttributeError',
-  'IndexError', 'StopIteration', 'frozenset', 'slice', 'divmod', 'pow', 'globals', 'locals', 'exec', 'eval', 'compile',
-  'memoryview', 'complex', 'help', 'dataclass', 'field', 'override', 'abstractmethod', 'wraps', 'lru_cache', 'cache',
+  'print',
+  'len',
+  'str',
+  'int',
+  'float',
+  'bool',
+  'list',
+  'dict',
+  'set',
+  'tuple',
+  'range',
+  'enumerate',
+  'zip',
+  'map',
+  'filter',
+  'sorted',
+  'reversed',
+  'isinstance',
+  'issubclass',
+  'getattr',
+  'setattr',
+  'hasattr',
+  'delattr',
+  'type',
+  'super',
+  'open',
+  'iter',
+  'next',
+  'min',
+  'max',
+  'sum',
+  'abs',
+  'round',
+  'any',
+  'all',
+  'repr',
+  'format',
+  'id',
+  'hash',
+  'input',
+  'vars',
+  'dir',
+  'callable',
+  'ord',
+  'chr',
+  'bytes',
+  'bytearray',
+  'object',
+  'property',
+  'staticmethod',
+  'classmethod',
+  'Exception',
+  'ValueError',
+  'TypeError',
+  'KeyError',
+  'RuntimeError',
+  'NotImplementedError',
+  'AttributeError',
+  'IndexError',
+  'StopIteration',
+  'frozenset',
+  'slice',
+  'divmod',
+  'pow',
+  'globals',
+  'locals',
+  'exec',
+  'eval',
+  'compile',
+  'memoryview',
+  'complex',
+  'help',
+  'dataclass',
+  'field',
+  'override',
+  'abstractmethod',
+  'wraps',
+  'lru_cache',
+  'cache',
 ]);
 const PY_STDLIB = new Set([
-  'os', 'sys', 're', 'json', 'time', 'datetime', 'math', 'random', 'typing', 'collections', 'itertools', 'functools',
-  'pathlib', 'logging', 'subprocess', 'threading', 'multiprocessing', 'asyncio', 'io', 'abc', 'enum', 'dataclasses',
-  'copy', 'pickle', 'struct', 'socket', 'ssl', 'http', 'urllib', 'email', 'uuid', 'hashlib', 'hmac', 'base64', 'shutil',
-  'tempfile', 'glob', 'fnmatch', 'argparse', 'configparser', 'csv', 'sqlite3', 'decimal', 'fractions', 'statistics',
-  'string', 'textwrap', 'unicodedata', 'operator', 'contextlib', 'inspect', 'traceback', 'warnings', 'weakref', 'types',
-  'queue', 'heapq', 'bisect', 'array', 'secrets', 'signal', 'select', 'errno', 'platform', 'importlib', 'unittest',
-  'pprint', 'zipfile', 'tarfile', 'gzip', 'zlib', 'html', 'xml', 'ctypes', 'concurrent', 'numbers', 'codecs', 'locale',
-  'gettext', 'calendar', 'zoneinfo', 'builtins', '__future__', 'ast', 'dis', 'tokenize', 'token', 'keyword', 'sched',
-  'timeit', 'cProfile', 'profile', 'pdb', 'doctest', 'site', 'atexit', 'getpass', 'shlex', 'mimetypes', 'webbrowser',
-  'wsgiref', 'ipaddress', 'graphlib', 'stat', 'filecmp', 'linecache', 'fileinput', 'tomllib',
+  'os',
+  'sys',
+  're',
+  'json',
+  'time',
+  'datetime',
+  'math',
+  'random',
+  'typing',
+  'collections',
+  'itertools',
+  'functools',
+  'pathlib',
+  'logging',
+  'subprocess',
+  'threading',
+  'multiprocessing',
+  'asyncio',
+  'io',
+  'abc',
+  'enum',
+  'dataclasses',
+  'copy',
+  'pickle',
+  'struct',
+  'socket',
+  'ssl',
+  'http',
+  'urllib',
+  'email',
+  'uuid',
+  'hashlib',
+  'hmac',
+  'base64',
+  'shutil',
+  'tempfile',
+  'glob',
+  'fnmatch',
+  'argparse',
+  'configparser',
+  'csv',
+  'sqlite3',
+  'decimal',
+  'fractions',
+  'statistics',
+  'string',
+  'textwrap',
+  'unicodedata',
+  'operator',
+  'contextlib',
+  'inspect',
+  'traceback',
+  'warnings',
+  'weakref',
+  'types',
+  'queue',
+  'heapq',
+  'bisect',
+  'array',
+  'secrets',
+  'signal',
+  'select',
+  'errno',
+  'platform',
+  'importlib',
+  'unittest',
+  'pprint',
+  'zipfile',
+  'tarfile',
+  'gzip',
+  'zlib',
+  'html',
+  'xml',
+  'ctypes',
+  'concurrent',
+  'numbers',
+  'codecs',
+  'locale',
+  'gettext',
+  'calendar',
+  'zoneinfo',
+  'builtins',
+  '__future__',
+  'ast',
+  'dis',
+  'tokenize',
+  'token',
+  'keyword',
+  'sched',
+  'timeit',
+  'cProfile',
+  'profile',
+  'pdb',
+  'doctest',
+  'site',
+  'atexit',
+  'getpass',
+  'shlex',
+  'mimetypes',
+  'webbrowser',
+  'wsgiref',
+  'ipaddress',
+  'graphlib',
+  'stat',
+  'filecmp',
+  'linecache',
+  'fileinput',
+  'tomllib',
 ]);
 
 interface SymbolEntry {
@@ -62,22 +279,116 @@ interface FileTable {
 }
 
 const GENERIC_METHODS = new Set([
-  'get', 'set', 'add', 'remove', 'push', 'pop', 'map', 'filter', 'then', 'catch', 'on', 'off', 'emit', 'json', 'send', 'status',
-  'toString', 'has', 'keys', 'values', 'entries', 'call', 'apply', 'bind', 'slice', 'concat', 'sort', 'reverse', 'indexOf',
-  'includes', 'test', 'match', 'replace', 'trim', 'split', 'join', 'write', 'read', 'end', 'close', 'open', 'next', 'done',
-  'resolve', 'reject', 'log', 'error', 'warn', 'info', 'debug', 'append', 'extend', 'items', 'update', 'copy', 'clear',
-  'format', 'strip', 'lower', 'upper', 'encode', 'decode', 'startswith', 'endswith', 'exists', 'delete', 'post', 'put',
-  'patch', 'use', 'listen', 'forEach', 'some', 'every', 'reduce', 'flat', 'find', 'findIndex', 'fill', 'length', 'size',
-  'toJSON', 'valueOf', 'assign', 'freeze', 'query', 'execute', 'commit', 'rollback', 'connect', 'disconnect', 'run',
+  'get',
+  'set',
+  'add',
+  'remove',
+  'push',
+  'pop',
+  'map',
+  'filter',
+  'then',
+  'catch',
+  'on',
+  'off',
+  'emit',
+  'json',
+  'send',
+  'status',
+  'toString',
+  'has',
+  'keys',
+  'values',
+  'entries',
+  'call',
+  'apply',
+  'bind',
+  'slice',
+  'concat',
+  'sort',
+  'reverse',
+  'indexOf',
+  'includes',
+  'test',
+  'match',
+  'replace',
+  'trim',
+  'split',
+  'join',
+  'write',
+  'read',
+  'end',
+  'close',
+  'open',
+  'next',
+  'done',
+  'resolve',
+  'reject',
+  'log',
+  'error',
+  'warn',
+  'info',
+  'debug',
+  'append',
+  'extend',
+  'items',
+  'update',
+  'copy',
+  'clear',
+  'format',
+  'strip',
+  'lower',
+  'upper',
+  'encode',
+  'decode',
+  'startswith',
+  'endswith',
+  'exists',
+  'delete',
+  'post',
+  'put',
+  'patch',
+  'use',
+  'listen',
+  'forEach',
+  'some',
+  'every',
+  'reduce',
+  'flat',
+  'find',
+  'findIndex',
+  'fill',
+  'length',
+  'size',
+  'toJSON',
+  'valueOf',
+  'assign',
+  'freeze',
+  'query',
+  'execute',
+  'commit',
+  'rollback',
+  'connect',
+  'disconnect',
+  'run',
 ]);
 
 export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFacts>): ResolveStats {
-  const stats: ResolveStats = { unresolvedImports: 0, unresolvedCalls: 0, resolvedImports: 0, resolvedCalls: 0, ambiguousCalls: 0 };
+  const stats: ResolveStats = {
+    unresolvedImports: 0,
+    unresolvedCalls: 0,
+    externalCalls: 0,
+    resolvedImports: 0,
+    resolvedCalls: 0,
+    ambiguousCalls: 0,
+  };
   const filesByPath = new Set(d.files.map((f) => f.path));
   const tables = new Map<string, FileTable>();
   const globalByName = new Map<string, SymbolEntry[]>();
   const workspacePkgs = new Map<string, { dir: string; main?: string }>();
-  for (const m of d.manifests) if (m.ecosystem === 'npm' && m.name) workspacePkgs.set(m.name, { dir: m.dir, main: (m.extra.main as string) ?? (m.extra.module as string) });
+  for (const m of d.manifests)
+    if (m.ecosystem === 'npm' && m.name)
+      workspacePkgs.set(m.name, { dir: m.dir, main: (m.extra.main as string) ?? (m.extra.module as string) });
 
   /* ---------- 1. symbol nodes ---------- */
   for (const [p, facts] of all) {
@@ -141,7 +452,8 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
   for (const table of tables.values()) {
     const { facts, fileId, path: p } = table;
     for (const imp of facts.imports) {
-      const target = facts.language === 'python' ? pyResolver.resolve(p, imp.specifier) : jsResolver.resolve(p, imp.specifier);
+      const target =
+        facts.language === 'python' ? pyResolver.resolve(p, imp.specifier) : jsResolver.resolve(p, imp.specifier);
       if (!target) {
         stats.unresolvedImports++;
         continue;
@@ -149,7 +461,14 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
       stats.resolvedImports++;
       if (target.kind === 'external') {
         const extId = ids.external(target.ecosystem, target.name);
-        if (!g.hasNode(extId)) g.addNode({ id: extId, kind: 'external', name: target.name, qname: `${target.ecosystem}:${target.name}`, props: { ecosystem: target.ecosystem, inferred: true } });
+        if (!g.hasNode(extId))
+          g.addNode({
+            id: extId,
+            kind: 'external',
+            name: target.name,
+            qname: `${target.ecosystem}:${target.name}`,
+            props: { ecosystem: target.ecosystem, inferred: true },
+          });
         g.addEdge('imports', fileId, extId, { evidence: imp.span, props: { isDynamic: imp.isDynamic } });
         if (imp.namespace) table.locals.set(imp.namespace, { kind: 'external', id: extId });
         for (const n of imp.names) table.locals.set(n.local, { kind: 'external', id: extId });
@@ -161,7 +480,9 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
       if (imp.namespace) table.locals.set(imp.namespace, { kind: 'file', id: targetId });
       for (const n of imp.names) {
         if (n.imported === '*') {
-          if (targetTable) for (const [qn, e] of targetTable.own) if (!e.decl.parentQname) table.locals.set(qn, { kind: 'symbol', id: e.id });
+          if (targetTable)
+            for (const [qn, e] of targetTable.own)
+              if (!e.decl.parentQname) table.locals.set(qn, { kind: 'symbol', id: e.id });
           continue;
         }
         const bound = targetTable ? bindExport(targetTable, n.imported, tables, jsResolver, pyResolver, 0) : undefined;
@@ -183,11 +504,20 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     for (const [qn, entry] of table.own) {
       const decl = entry.decl;
       if (decl.kind !== 'class') continue;
-      for (const [rel, names] of [['extends', decl.extends ?? []], ['implements', decl.implements ?? []]] as const) {
+      for (const [rel, names] of [
+        ['extends', decl.extends ?? []],
+        ['implements', decl.implements ?? []],
+      ] as const) {
         for (const name of names) {
           const target = lookupDotted(table, name, tables, globalByName, qn);
           if (target?.length === 1) g.addEdge(rel, entry.id, target[0].id, { evidence: decl.span });
-          else if (target && target.length > 1) for (const t of target) g.addEdge(rel, entry.id, t.id, { confidence: 1 / target.length, props: { ambiguous: true }, evidence: decl.span });
+          else if (target && target.length > 1)
+            for (const t of target)
+              g.addEdge(rel, entry.id, t.id, {
+                confidence: 1 / target.length,
+                props: { ambiguous: true },
+                evidence: decl.span,
+              });
         }
       }
     }
@@ -201,10 +531,14 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     for (const call of facts.calls) {
       const first = call.callee.split('.')[0];
       if (bi.has(first) || bi.has(call.callee)) continue;
-      const callerId = call.callerQname ? (table.own.get(call.callerQname)?.id ?? nearestOwner(table, call.callerQname)) : table.fileId;
+      const callerId = call.callerQname
+        ? (table.own.get(call.callerQname)?.id ?? nearestOwner(table, call.callerQname))
+        : table.fileId;
       const targets = lookupDotted(table, call.callee, tables, globalByName, call.callerQname);
       if (!targets || targets.length === 0) {
-        stats.unresolvedCalls++;
+        const kind = classifyUnbound(table, first, call.callerQname);
+        if (kind === 'external') stats.externalCalls++;
+        else if (kind === 'unresolved') stats.unresolvedCalls++;
         continue;
       }
       stats.resolvedCalls++;
@@ -235,7 +569,13 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
         parentId: table.fileId,
         span: ep.span,
         metrics: { fanIn: 0, fanOut: 0 },
-        props: { method: ep.method, path: ep.path, framework: ep.framework, protocol: ep.method === 'WS' ? 'ws' : 'http', isTest: g.getNode(table.fileId)?.props.isTest ?? false },
+        props: {
+          method: ep.method,
+          path: ep.path,
+          framework: ep.framework,
+          protocol: ep.method === 'WS' ? 'ws' : 'http',
+          isTest: g.getNode(table.fileId)?.props.isTest ?? false,
+        },
       });
       let handler: { id: string }[] | undefined;
       if (ep.handlerRef) {
@@ -246,7 +586,8 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
         const own = table.own.get(ep.enclosingQname);
         if (own) handler = [{ id: own.id }];
       }
-      if (handler) for (const h of handler) g.addEdge('exposes', id, h.id, { evidence: ep.span, confidence: 1 / handler.length });
+      if (handler)
+        for (const h of handler) g.addEdge('exposes', id, h.id, { evidence: ep.span, confidence: 1 / handler.length });
     }
   }
 
@@ -280,7 +621,8 @@ function bindExport(
   for (const ex of target.facts.exports) {
     if (ex.name !== name && ex.name !== '*') continue;
     if (ex.from) {
-      const r = target.facts.language === 'python' ? py.resolve(target.path, ex.from) : js.resolve(target.path, ex.from);
+      const r =
+        target.facts.language === 'python' ? py.resolve(target.path, ex.from) : js.resolve(target.path, ex.from);
       if (!r || r.kind !== 'file') continue;
       const t2 = tables.get(r.path);
       if (!t2) return { kind: 'file', id: ids.file(r.path) };
@@ -326,7 +668,9 @@ function lookupDotted(
       // inherited
       const inherited = findInherited(table, cls, rest[0], tables, globalByName, 0);
       if (inherited) return [{ id: inherited, confidence: 0.9 }];
-      return GENERIC_METHODS.has(rest[0]) ? undefined : fallbackByName(rest[rest.length - 1], globalByName, ['method'], 0.5);
+      return GENERIC_METHODS.has(rest[0])
+        ? undefined
+        : fallbackByName(rest[rest.length - 1], globalByName, ['method'], 0.5);
     }
     return undefined;
   }
@@ -395,7 +739,21 @@ function lookupDotted(
   return fallbackByName(last, globalByName, ['method'], 0.5);
 }
 
-function findBinding(table: FileTable, name: string, contextQname?: string): { ref: string; isNew: boolean } | undefined {
+/** Why a call head did not bind: a library call, a known name that failed, or an unknown name (not counted). */
+function classifyUnbound(table: FileTable, head: string, contextQname?: string): 'external' | 'unresolved' | 'unknown' {
+  const local = table.locals.get(head);
+  if (local?.kind === 'external') return 'external';
+  const binding = findBinding(table, head, contextQname);
+  if (binding && table.locals.get(binding.ref.split('.')[0])?.kind === 'external') return 'external';
+  if (local || binding || table.own.has(head)) return 'unresolved';
+  return 'unknown';
+}
+
+function findBinding(
+  table: FileTable,
+  name: string,
+  contextQname?: string,
+): { ref: string; isNew: boolean } | undefined {
   const parts = contextQname ? contextQname.split('.') : [];
   while (true) {
     const b = table.bindings.get(parts.join('.'))?.get(name);
@@ -405,7 +763,12 @@ function findBinding(table: FileTable, name: string, contextQname?: string): { r
   }
 }
 
-function fallbackByName(name: string, globalByName: Map<string, SymbolEntry[]>, kinds: string[], base = 0.7): Target[] | undefined {
+function fallbackByName(
+  name: string,
+  globalByName: Map<string, SymbolEntry[]>,
+  kinds: string[],
+  base = 0.7,
+): Target[] | undefined {
   const cands = (globalByName.get(name) ?? []).filter((e) => kinds.includes(e.decl.kind));
   if (cands.length === 0 || cands.length > 4) return undefined;
   const conf = cands.length === 1 ? base : (base * 0.7) / cands.length;
@@ -423,7 +786,10 @@ function enclosingClass(table: FileTable, contextQname?: string): SymbolEntry | 
   return undefined;
 }
 
-function findEntryById(tables: Map<string, FileTable>, id: string): { table: FileTable; entry: SymbolEntry } | undefined {
+function findEntryById(
+  tables: Map<string, FileTable>,
+  id: string,
+): { table: FileTable; entry: SymbolEntry } | undefined {
   for (const t of tables.values()) for (const e of t.own.values()) if (e.id === id) return { table: t, entry: e };
   return undefined;
 }
@@ -475,13 +841,15 @@ class JsResolver {
     if (spec.startsWith('node:')) return { kind: 'external', ecosystem: 'node', name: spec };
     const fromDir = path.posix.dirname(from);
     if (spec.startsWith('.') || spec.startsWith('/')) {
-      const base = spec.startsWith('/') ? spec.slice(1) : path.posix.normalize(path.posix.join(fromDir === '.' ? '' : fromDir, spec));
+      const base = spec.startsWith('/')
+        ? spec.slice(1)
+        : path.posix.normalize(path.posix.join(fromDir === '.' ? '' : fromDir, spec));
       const f = this.probe(base);
       return f ? { kind: 'file', path: f } : undefined;
     }
     // tsconfig paths / baseUrl
     for (const tc of this.d.tsconfigs) {
-      if (tc.dir && !from.startsWith(tc.dir + '/')) continue;
+      if (tc.dir && !from.startsWith(`${tc.dir}/`)) continue;
       for (const [pattern, targets] of Object.entries(tc.paths)) {
         const m = matchPattern(pattern, spec);
         if (m === undefined) continue;
@@ -502,7 +870,13 @@ class JsResolver {
     const ws = this.workspacePkgs.get(pkgName);
     if (ws) {
       const sub = spec.slice(pkgName.length + 1);
-      const candidates = sub ? [path.posix.join(ws.dir, sub)] : [ws.main ? path.posix.join(ws.dir, ws.main) : '', path.posix.join(ws.dir, 'src/index'), path.posix.join(ws.dir, 'index')].filter(Boolean);
+      const candidates = sub
+        ? [path.posix.join(ws.dir, sub)]
+        : [
+            ws.main ? path.posix.join(ws.dir, ws.main) : '',
+            path.posix.join(ws.dir, 'src/index'),
+            path.posix.join(ws.dir, 'index'),
+          ].filter(Boolean);
       for (const c of candidates) {
         const f = this.probe(path.posix.normalize(c));
         if (f) return { kind: 'file', path: f };
@@ -510,7 +884,7 @@ class JsResolver {
     }
     // '#imports' subpath imports, or a bare 'src/...' style path (common with baseUrl-less setups)
     if (spec.startsWith('#')) {
-      const f = this.probe(spec.slice(1)) ?? this.probe('src/' + spec.slice(1));
+      const f = this.probe(spec.slice(1)) ?? this.probe(`src/${spec.slice(1)}`);
       if (f) return { kind: 'file', path: f };
     }
     const bare = this.probe(spec);
@@ -536,7 +910,8 @@ function matchPattern(pattern: string, spec: string): string | undefined {
   if (star < 0) return pattern === spec ? '' : undefined;
   const pre = pattern.slice(0, star);
   const post = pattern.slice(star + 1);
-  if (spec.startsWith(pre) && spec.endsWith(post) && spec.length >= pre.length + post.length) return spec.slice(pre.length, spec.length - post.length);
+  if (spec.startsWith(pre) && spec.endsWith(post) && spec.length >= pre.length + post.length)
+    return spec.slice(pre.length, spec.length - post.length);
   return undefined;
 }
 
@@ -584,7 +959,7 @@ class PyResolver {
     // Try full, then progressively shorter (from a.b import c where c is a symbol in a/b.py)
     for (let n = parts.length; n >= Math.max(1, parts.length - 1); n--) {
       const rel = path.posix.join(base, ...parts.slice(0, n));
-      const asFile = rel + '.py';
+      const asFile = `${rel}.py`;
       const asPkg = path.posix.join(rel, '__init__.py');
       if (this.files.has(asFile)) return asFile;
       if (this.files.has(asPkg)) return asPkg;

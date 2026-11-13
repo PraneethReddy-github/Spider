@@ -12,7 +12,18 @@ import {
   spanOf,
 } from '../types.js';
 
-const HTTP_DECORATORS = new Set(['get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'route', 'api_route', 'websocket']);
+const HTTP_DECORATORS = new Set([
+  'get',
+  'post',
+  'put',
+  'delete',
+  'patch',
+  'options',
+  'head',
+  'route',
+  'api_route',
+  'websocket',
+]);
 
 interface Scope {
   qname?: string;
@@ -67,11 +78,23 @@ class Walker {
     switch (n.type) {
       case 'import_statement':
         for (const c of n.namedChildren) {
-          if (c.type === 'dotted_name') this.facts.imports.push({ specifier: c.text, names: [], namespace: c.text.split('.')[0], span: spanOf(n, this.ctx.path) });
+          if (c.type === 'dotted_name')
+            this.facts.imports.push({
+              specifier: c.text,
+              names: [],
+              namespace: c.text.split('.')[0],
+              span: spanOf(n, this.ctx.path),
+            });
           else if (c.type === 'aliased_import') {
             const name = field(c, 'name')?.text;
             const alias = field(c, 'alias')?.text;
-            if (name) this.facts.imports.push({ specifier: name, names: [], namespace: alias ?? name, span: spanOf(n, this.ctx.path) });
+            if (name)
+              this.facts.imports.push({
+                specifier: name,
+                names: [],
+                namespace: alias ?? name,
+                span: spanOf(n, this.ctx.path),
+              });
           }
         }
         return;
@@ -113,7 +136,8 @@ class Walker {
           if (right?.type === 'await' && right.namedChildren[0]) right = right.namedChildren[0];
           if (left?.type === 'identifier' && right?.type === 'call') {
             const fn = field(right, 'function');
-            if (fn && (fn.type === 'identifier' || fn.type === 'attribute')) this.facts.bindings.push({ name: left.text, scopeQname: scope.qname, ref: dottedText(fn), isNew: true });
+            if (fn && (fn.type === 'identifier' || fn.type === 'attribute'))
+              this.facts.bindings.push({ name: left.text, scopeQname: scope.qname, ref: dottedText(fn), isNew: true });
           }
         }
         if (first?.type === 'assignment' && !scope.qname) {
@@ -123,7 +147,14 @@ class Walker {
             if (left.text === '__all__' && right) {
               this.facts.hints.__all__ = right.namedChildren.map((s) => stringValue(s)).filter((x): x is string => !!x);
             } else {
-              this.facts.decls.push({ kind: 'variable', name: left.text, qname: left.text, span: spanOf(first, this.ctx.path), isExported: false, loc: 1 });
+              this.facts.decls.push({
+                kind: 'variable',
+                name: left.text,
+                qname: left.text,
+                span: spanOf(first, this.ctx.path),
+                isExported: false,
+                loc: 1,
+              });
             }
           }
           // Django urls: urlpatterns = [path('x/', view), ...]
@@ -153,7 +184,9 @@ class Walker {
     if (!name) return;
     const qname = this.q(scope, name);
     const params = field(n, 'parameters');
-    const paramNames = params ? params.namedChildren.map((p) => (field(p, 'name') ?? p).text.replace(/\s+/g, ' ').slice(0, 40)) : [];
+    const paramNames = params
+      ? params.namedChildren.map((p) => (field(p, 'name') ?? p).text.replace(/\s+/g, ' ').slice(0, 40))
+      : [];
     const decl: DeclFact = {
       kind: scope.isClass ? 'method' : 'function',
       name,
@@ -181,12 +214,28 @@ class Walker {
         if (p !== undefined) {
           let methods: string[] = [];
           if (last === 'route' || last === 'api_route') {
-            const kw = args?.namedChildren.find((a) => a.type === 'keyword_argument' && field(a, 'name')?.text === 'methods');
+            const kw = args?.namedChildren.find(
+              (a) => a.type === 'keyword_argument' && field(a, 'name')?.text === 'methods',
+            );
             const val = kw ? field(kw, 'value') : null;
-            methods = val ? val.namedChildren.map((s) => stringValue(s)?.toUpperCase()).filter((x): x is string => !!x) : ['GET'];
+            methods = val
+              ? val.namedChildren.map((s) => stringValue(s)?.toUpperCase()).filter((x): x is string => !!x)
+              : ['GET'];
           } else methods = [last === 'websocket' ? 'WS' : last.toUpperCase()];
-          const framework = this.ctx.frameworks.has('fastapi') ? 'fastapi' : this.ctx.frameworks.has('flask') ? 'flask' : 'python-http';
-          for (const m of methods) this.facts.endpoints.push({ method: m, path: p, framework, handlerRef: qname, enclosingQname: qname, span: spanOf(d, this.ctx.path) });
+          const framework = this.ctx.frameworks.has('fastapi')
+            ? 'fastapi'
+            : this.ctx.frameworks.has('flask')
+              ? 'flask'
+              : 'python-http';
+          for (const m of methods)
+            this.facts.endpoints.push({
+              method: m,
+              path: p,
+              framework,
+              handlerRef: qname,
+              enclosingQname: qname,
+              span: spanOf(d, this.ctx.path),
+            });
         }
       }
       // decorators are references/calls too
@@ -235,17 +284,31 @@ class Walker {
     if (fn.type !== 'identifier' && fn.type !== 'attribute') return;
     const callee = dottedText(fn);
     const args = field(n, 'arguments');
-    this.facts.calls.push({ callee, callerQname: scope.qname, argCount: args?.namedChildCount ?? 0, span: spanOf(n, this.ctx.path) });
+    this.facts.calls.push({
+      callee,
+      callerQname: scope.qname,
+      argCount: args?.namedChildCount ?? 0,
+      span: spanOf(n, this.ctx.path),
+    });
     // Flask: app.add_url_rule('/x', view_func=f); FastAPI: app.add_api_route('/x', f)
     const last = callee.split('.').pop();
     if ((last === 'add_url_rule' || last === 'add_api_route') && args) {
       const p = stringValue(args.namedChildren[0]);
       let handlerRef: string | undefined;
       for (const a of args.namedChildren) {
-        if (a.type === 'keyword_argument' && ['view_func', 'endpoint'].includes(field(a, 'name')?.text ?? '')) handlerRef = field(a, 'value')?.text;
+        if (a.type === 'keyword_argument' && ['view_func', 'endpoint'].includes(field(a, 'name')?.text ?? ''))
+          handlerRef = field(a, 'value')?.text;
         else if (a.type === 'identifier' && a !== args.namedChildren[0]) handlerRef = a.text;
       }
-      if (p) this.facts.endpoints.push({ method: 'ANY', path: p, framework: last === 'add_api_route' ? 'fastapi' : 'flask', handlerRef, enclosingQname: scope.qname, span: spanOf(n, this.ctx.path) });
+      if (p)
+        this.facts.endpoints.push({
+          method: 'ANY',
+          path: p,
+          framework: last === 'add_api_route' ? 'fastapi' : 'flask',
+          handlerRef,
+          enclosingQname: scope.qname,
+          span: spanOf(n, this.ctx.path),
+        });
     }
   }
 
@@ -264,7 +327,14 @@ class Walker {
       if (view?.type === 'identifier' || view?.type === 'attribute') handlerRef = dottedText(view);
       else if (view?.type === 'call') handlerRef = dottedText(field(view, 'function') ?? view); // View.as_view()
       if (view?.type === 'call' && field(view, 'function')?.text === 'include') continue;
-      this.facts.endpoints.push({ method: 'ANY', path: '/' + p.replace(/^\//, ''), framework: 'django', handlerRef, enclosingQname: scope.qname, span: spanOf(it, this.ctx.path) });
+      this.facts.endpoints.push({
+        method: 'ANY',
+        path: `/${p.replace(/^\//, '')}`,
+        framework: 'django',
+        handlerRef,
+        enclosingQname: scope.qname,
+        span: spanOf(it, this.ctx.path),
+      });
     }
   }
 }

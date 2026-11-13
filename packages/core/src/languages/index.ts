@@ -1,5 +1,5 @@
-import type { LanguageExtractor } from './types.js';
 import { pythonExtractor } from './python/extractor.js';
+import type { LanguageExtractor } from './types.js';
 import { typescriptExtractor } from './typescript/extractor.js';
 
 const registry = new Map<string, LanguageExtractor>();

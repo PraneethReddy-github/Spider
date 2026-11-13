@@ -5,16 +5,23 @@
   "description": "Intelligent codebase analysis and visualization platform",
   "scripts": {
     "build": "pnpm -r --filter './packages/**' run build",
-    "dev": "pnpm -r --parallel run dev",
+    "build:lib": "pnpm -r --filter '!@spider/web' run build",
+    "dev": "pnpm build:lib && pnpm -r --parallel --filter spider-cli --filter @spider/web run dev",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "bench": "node scripts/bench.mjs",
     "spider": "node packages/cli/dist/index.js"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@types/node": "^20.14.0",
     "typescript": "^5.5.4",
-    "vitest": "^2.0.5",
-    "@types/node": "^20.14.0"
+    "vitest": "^2.0.5"
   },
   "packageManager": "pnpm@9.0.0",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

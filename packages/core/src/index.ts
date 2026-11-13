@@ -11,3 +11,4 @@ export { QueryService } from './query/service.js';
 export { parseSource, getParser, PARSEABLE_LANGUAGES } from './parse/parser.js';
 export { getExtractor, extractableLanguages } from './languages/index.js';
 export type * from './languages/types.js';
+export { toDot, toGraphML } from './query/export.js';

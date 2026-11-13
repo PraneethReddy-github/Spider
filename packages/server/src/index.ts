@@ -4,9 +4,24 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
-import { QueryService, analyze, deleteRepo, listRepos, loadRepo, spiderHome } from '@spider/core';
-import type { EdgeKind, JobProgress, NodeKind, RepoInfo, ViewLevel } from '@spider/shared';
-import Fastify, { type FastifyInstance } from 'fastify';
+import websocket from '@fastify/websocket';
+import { QueryService, analyze, deleteRepo, listRepos, loadRepo, spiderHome, toDot, toGraphML } from '@spider/core';
+import {
+  type EdgeKind,
+  type JobProgress,
+  type RepoInfo,
+  diagnosticsQuerySchema,
+  endpointsQuerySchema,
+  exportQuerySchema,
+  graphQuerySchema,
+  parseQuery,
+  pathQuerySchema,
+  searchQuerySchema,
+  sourceQuerySchema,
+  traversalQuerySchema,
+  treeQuerySchema,
+} from '@spider/shared';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 
 export interface ServerOptions {
   port?: number;
@@ -18,6 +33,14 @@ export interface ServerOptions {
 }
 
 const jobs = new Map<string, JobProgress>();
+/** WebSocket subscribers per job id; each receives every progress update. */
+const jobListeners = new Map<string, Set<(job: JobProgress) => void>>();
+const isFinal = (job: JobProgress) => job.status === 'done' || job.status === 'failed';
+
+function publish(job: JobProgress) {
+  for (const listener of jobListeners.get(job.jobId) ?? []) listener(job);
+  if (isFinal(job)) jobListeners.delete(job.jobId);
+}
 const services = new Map<string, Promise<{ q: QueryService; info: RepoInfo }>>();
 
 async function getService(repoId: string, home?: string) {
@@ -30,9 +53,12 @@ async function getService(repoId: string, home?: string) {
   return p;
 }
 
-function csv<T extends string>(v: unknown): T[] | undefined {
-  if (typeof v !== 'string' || !v) return undefined;
-  return v.split(',').filter(Boolean) as T[];
+/** Validates `query` against a shared schema; on failure replies 400 `{error}` and returns undefined. */
+function valid<S extends Parameters<typeof parseQuery>[0]>(schema: S, query: unknown, reply: FastifyReply) {
+  const r = parseQuery(schema, query);
+  if (r.ok) return r.data;
+  void reply.code(400).send({ error: r.error });
+  return undefined;
 }
 
 function findWebDir(): string | undefined {
@@ -53,6 +79,7 @@ function findWebDir(): string | undefined {
 export async function createServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
   await app.register(cors, { origin: true });
+  await app.register(websocket);
   const home = opts.home;
 
   app.get('/api/v1/health', async () => ({ ok: true }));
@@ -79,16 +106,19 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
         job.message = e.message;
         if (e.message && (e.stage !== 'parse' || e.current === e.total)) job.log.push(`[${e.stage}] ${e.message}`);
         if (job.log.length > 200) job.log.splice(0, job.log.length - 200);
+        publish(job);
       },
     })
       .then((info) => {
         job.status = 'done';
         job.repoId = info.repoId;
         services.delete(info.repoId);
+        publish(job);
       })
       .catch((err) => {
         job.status = 'failed';
         job.error = String(err?.message ?? err);
+        publish(job);
       });
     return { jobId };
   });
@@ -97,6 +127,26 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     const job = jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'job not found' });
     return job;
+  });
+
+  // Streams JobProgress JSON messages: the current state on connect, then every update; closes after done/failed.
+  app.get<{ Params: { id: string } }>('/api/v1/jobs/:id/events', { websocket: true }, (socket, req) => {
+    const job = jobs.get(req.params.id);
+    if (!job) {
+      socket.send(JSON.stringify({ error: 'job not found' }));
+      socket.close(4404, 'job not found');
+      return;
+    }
+    const send = (j: JobProgress) => {
+      socket.send(JSON.stringify(j));
+      if (isFinal(j)) socket.close(1000, j.status);
+    };
+    send(job);
+    if (isFinal(job)) return;
+    let set = jobListeners.get(job.jobId);
+    if (!set) jobListeners.set(job.jobId, (set = new Set()));
+    set.add(send);
+    socket.on('close', () => jobListeners.get(job.jobId)?.delete(send));
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/repos/:id', async (req, reply) => {
@@ -117,7 +167,11 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   app.post<{ Params: { id: string } }>('/api/v1/repos/:id/reanalyze', async (req, reply) => {
     const { info } = await getService(req.params.id, home).catch(() => ({ info: undefined }));
     if (!info) return reply.code(404).send({ error: 'repo not found' });
-    const res = await app.inject({ method: 'POST', url: '/api/v1/repos', payload: { source: info.source, name: info.name } });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/repos',
+      payload: { source: info.source, name: info.name },
+    });
     return res.json();
   });
 
@@ -129,23 +183,19 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     return fn(q, info);
   };
 
-  app.get<RepoReq>('/api/v1/repos/:id/graph', async (req) =>
-    withService(req.params.id, (q) =>
-      q.projection({
-        level: ((req.query.level as ViewLevel) || 'L1') as ViewLevel,
-        expanded: csv(req.query.expanded),
-        edgeKinds: csv<EdgeKind>(req.query.edgeKinds),
-        nodeKinds: csv<NodeKind>(req.query.nodeKinds),
-        languages: csv(req.query.languages),
-        includeTests: req.query.includeTests === 'true',
-        minConfidence: req.query.minConfidence ? Number(req.query.minConfidence) : undefined,
-        minWeight: req.query.minWeight ? Number(req.query.minWeight) : undefined,
-      }),
-    ),
-  );
+  app.get<RepoReq>('/api/v1/repos/:id/graph', async (req, reply) => {
+    const p = valid(graphQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) =>
+      p.focus && !q.node(p.focus) ? reply.code(404).send({ error: 'focus node not found' }) : q.projection(p),
+    );
+  });
 
   app.get<RepoReq>('/api/v1/repos/:id/nodes/:nodeId', async (req, reply) =>
-    withService(req.params.id, (q) => q.detail(req.params.nodeId!) ?? reply.code(404).send({ error: 'node not found' })),
+    withService(
+      req.params.id,
+      (q) => q.detail(req.params.nodeId!) ?? reply.code(404).send({ error: 'node not found' }),
+    ),
   );
 
   app.get<RepoReq>('/api/v1/repos/:id/nodes/:nodeId/source', async (req, reply) =>
@@ -157,62 +207,81 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       const text = await fs.readFile(abs, 'utf8').catch(() => undefined);
       if (text === undefined) return reply.code(404).send({ error: 'file missing on disk' });
       const lines = text.split('\n');
-      const context = Number(req.query.context ?? 5);
+      const p = valid(sourceQuerySchema, req.query, reply);
+      if (!p) return reply;
+      const { context } = p;
       const startLine = node.span ? Math.max(1, node.span.startLine - context) : 1;
       const endLine = node.span ? Math.min(lines.length, node.span.endLine + context) : Math.min(lines.length, 400);
-      return { path: node.file, language: node.language, startLine, endLine, highlight: node.span ? [node.span.startLine, node.span.endLine] : undefined, lines: lines.slice(startLine - 1, endLine), totalLines: lines.length };
+      return {
+        path: node.file,
+        language: node.language,
+        startLine,
+        endLine,
+        highlight: node.span ? [node.span.startLine, node.span.endLine] : undefined,
+        lines: lines.slice(startLine - 1, endLine),
+        totalLines: lines.length,
+      };
     }),
   );
 
-  app.get<RepoReq>('/api/v1/repos/:id/search', async (req) =>
-    withService(req.params.id, (q) => q.search(req.query.q ?? '', csv(req.query.kinds), req.query.limit ? Number(req.query.limit) : 25)),
-  );
-
-  app.get<RepoReq>('/api/v1/repos/:id/upstream/:nodeId', async (req) =>
-    withService(req.params.id, (q) => q.upstream(req.params.nodeId!, Number(req.query.depth ?? 3), csv<EdgeKind>(req.query.kinds))),
-  );
-
-  app.get<RepoReq>('/api/v1/repos/:id/downstream/:nodeId', async (req) =>
-    withService(req.params.id, (q) => q.downstream(req.params.nodeId!, Number(req.query.depth ?? 3), csv<EdgeKind>(req.query.kinds))),
-  );
-
-  app.get<RepoReq>('/api/v1/repos/:id/neighbors/:nodeId', async (req) =>
-    withService(req.params.id, (q) => q.neighborhood(req.params.nodeId!, 'both', Number(req.query.depth ?? 1), csv<EdgeKind>(req.query.kinds))),
-  );
-
-  app.get<RepoReq>('/api/v1/repos/:id/path', async (req, reply) => {
-    if (!req.query.from || !req.query.to) return reply.code(400).send({ error: 'from and to are required' });
-    return withService(req.params.id, (q) => q.path(req.query.from, req.query.to, csv<EdgeKind>(req.query.kinds)));
+  app.get<RepoReq>('/api/v1/repos/:id/search', async (req, reply) => {
+    const p = valid(searchQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) => q.search(p.q, p.kinds, p.limit));
   });
 
-  app.get<RepoReq>('/api/v1/repos/:id/endpoints', async (req) => withService(req.params.id, (q) => q.endpoints(req.query.includeTests === 'true')));
-  app.get<RepoReq>('/api/v1/repos/:id/trace/:nodeId', async (req) => withService(req.params.id, (q) => q.trace(req.params.nodeId!, Number(req.query.depth ?? 6))));
-  app.get<RepoReq>('/api/v1/repos/:id/diagnostics', async (req) => withService(req.params.id, (q) => q.diagnostics(req.query.type)));
-  app.get<RepoReq>('/api/v1/repos/:id/subsystems', async (req) => withService(req.params.id, (q) => q.subsystems()));
-  app.get<RepoReq>('/api/v1/repos/:id/tree', async (req) => withService(req.params.id, (q) => q.tree(req.query.node ?? 'repo', Number(req.query.depth ?? 1))));
+  const traversal = (
+    route: string,
+    run: (q: QueryService, id: string, depth?: number, kinds?: EdgeKind[]) => unknown,
+  ) =>
+    app.get<RepoReq>(`/api/v1/repos/:id/${route}/:nodeId`, async (req, reply) => {
+      const p = valid(traversalQuerySchema, req.query, reply);
+      if (!p) return reply;
+      return withService(req.params.id, (q) => run(q, req.params.nodeId!, p.depth, p.kinds));
+    });
+  traversal('upstream', (q, id, depth, kinds) => q.upstream(id, depth ?? 3, kinds));
+  traversal('downstream', (q, id, depth, kinds) => q.downstream(id, depth ?? 3, kinds));
+  traversal('neighbors', (q, id, depth, kinds) => q.neighborhood(id, 'both', depth ?? 1, kinds));
+  traversal('trace', (q, id, depth) => q.trace(id, depth ?? 6));
 
-  app.get<RepoReq>('/api/v1/repos/:id/export', async (req, reply) =>
-    withService(req.params.id, (q, info) => {
-      const format = req.query.format ?? 'json';
+  app.get<RepoReq>('/api/v1/repos/:id/path', async (req, reply) => {
+    const p = valid(pathQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) => q.path(p.from, p.to, p.kinds));
+  });
+
+  app.get<RepoReq>('/api/v1/repos/:id/endpoints', async (req, reply) => {
+    const p = valid(endpointsQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) => q.endpoints(p.includeTests));
+  });
+  app.get<RepoReq>('/api/v1/repos/:id/diagnostics', async (req, reply) => {
+    const p = valid(diagnosticsQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) => q.diagnostics(p.type));
+  });
+  app.get<RepoReq>('/api/v1/repos/:id/subsystems', async (req) => withService(req.params.id, (q) => q.subsystems()));
+  app.get<RepoReq>('/api/v1/repos/:id/tree', async (req, reply) => {
+    const p = valid(treeQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q) => q.tree(p.node, p.depth));
+  });
+
+  app.get<RepoReq>('/api/v1/repos/:id/export', async (req, reply) => {
+    const p = valid(exportQuerySchema, req.query, reply);
+    if (!p) return reply;
+    return withService(req.params.id, (q, info) => {
       const sg = q.g.toSubGraph();
-      if (format === 'json') return { info, ...sg };
-      if (format === 'dot') {
-        const esc = (s: string) => s.replace(/"/g, '\\"');
-        const lines = ['digraph spider {', '  rankdir=LR;', '  node [shape=box, fontname="Helvetica"];'];
-        for (const n of sg.nodes) lines.push(`  "${n.id}" [label="${esc(n.name)}", kind="${n.kind}"];`);
-        for (const e of sg.edges) if (e.kind !== 'contains' && e.kind !== 'member_of') lines.push(`  "${e.src}" -> "${e.dst}" [label="${e.kind}"];`);
-        lines.push('}');
-        reply.type('text/vnd.graphviz');
-        return lines.join('\n');
-      }
-      return reply.code(400).send({ error: `unknown format ${format}` });
-    }),
-  );
+      if (p.format === 'dot') return reply.type('text/vnd.graphviz').send(toDot(sg));
+      if (p.format === 'graphml') return reply.type('application/graphml+xml').send(toGraphML(sg));
+      return { info, ...sg };
+    });
+  });
 
   /* ---------- static web app ---------- */
   const webDir = opts.webDir ?? findWebDir();
   if (webDir) {
-    await app.register(fastifyStatic, { root: webDir, prefix: '/', wildcard: false });
+    await app.register(fastifyStatic, { root: webDir, prefix: '/', wildcard: true });
     app.setNotFoundHandler(async (req, reply) => {
       if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
       return reply.sendFile('index.html');

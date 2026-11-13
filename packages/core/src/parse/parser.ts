@@ -85,7 +85,12 @@ export function firstChildOfType(n: SyntaxNode, ...types: string[]): SyntaxNode 
 /** Unquote a string literal node's text. */
 export function stringValue(n: SyntaxNode | null | undefined): string | undefined {
   if (!n) return undefined;
-  if (n.type === 'string' || n.type === 'string_literal' || n.type === 'template_string' || n.type === 'concatenated_string') {
+  if (
+    n.type === 'string' ||
+    n.type === 'string_literal' ||
+    n.type === 'template_string' ||
+    n.type === 'concatenated_string'
+  ) {
     const t = n.text;
     if (t.length >= 2) {
       const q = t[0];
@@ -96,7 +101,7 @@ export function stringValue(n: SyntaxNode | null | undefined): string | undefine
   return undefined;
 }
 
-export function walk(n: SyntaxNode, visit: (node: SyntaxNode, depth: number) => boolean | void, depth = 0): void {
+export function walk(n: SyntaxNode, visit: (node: SyntaxNode, depth: number) => boolean | undefined, depth = 0): void {
   const stop = visit(n, depth);
   if (stop === false) return;
   for (const c of n.namedChildren) walk(c, visit, depth + 1);

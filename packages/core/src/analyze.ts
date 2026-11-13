@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { EdgeKind, NodeKind, RepoInfo, RepoStats } from '@spider/shared';
@@ -41,6 +41,7 @@ export function repoDir(home: string, repoId: string): string {
 }
 
 function isGitUrl(s: string): boolean {
+  if (existsSync(path.resolve(s))) return false; // `fixtures/x` is a local dir, not owner/repo
   return /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/.test(s) || /^[\w.-]+\/[\w.-]+$/.test(s);
 }
 
@@ -95,7 +96,12 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   /* ---------- discover ---------- */
   progress({ stage: 'discover', current: 0, total: 0 });
   const d = await discover(root, (n) => progress({ stage: 'discover', current: n, total: 0, message: `${n} files` }));
-  progress({ stage: 'discover', current: d.files.length, total: d.files.length, message: `${d.files.length} files, frameworks: ${[...d.frameworks].join(', ') || 'none'}` });
+  progress({
+    stage: 'discover',
+    current: d.files.length,
+    total: d.files.length,
+    message: `${d.files.length} files, frameworks: ${[...d.frameworks].join(', ') || 'none'}`,
+  });
   const g = new GraphBuilder();
   emitStructure(g, d, name);
 
@@ -109,12 +115,22 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   /* ---------- resolve ---------- */
   progress({ stage: 'resolve', current: 0, total: 1 });
   const rs = resolve(g, d, facts);
-  progress({ stage: 'resolve', current: 1, total: 1, message: `${rs.resolvedImports} imports, ${rs.resolvedCalls} calls resolved` });
+  progress({
+    stage: 'resolve',
+    current: 1,
+    total: 1,
+    message: `${rs.resolvedImports} imports, ${rs.resolvedCalls} calls resolved`,
+  });
 
   /* ---------- enrich ---------- */
   progress({ stage: 'enrich', current: 0, total: 1 });
   const en = enrich(g, d);
-  progress({ stage: 'enrich', current: 1, total: 1, message: `${en.subsystems} subsystems, ${en.diagnostics.length} diagnostics` });
+  progress({
+    stage: 'enrich',
+    current: 1,
+    total: 1,
+    message: `${en.subsystems} subsystems, ${en.diagnostics.length} diagnostics`,
+  });
 
   /* ---------- stats & persist ---------- */
   const stats = computeStats(g, d, rs);
@@ -136,14 +152,27 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   store.close();
   await fs.writeFile(path.join(dir, 'repo.json'), JSON.stringify(info, null, 2));
   info.durationMs = Date.now() - started;
-  progress({ stage: 'done', current: 1, total: 1, message: `${stats.nodes} nodes, ${stats.edges} edges in ${(info.durationMs / 1000).toFixed(1)}s` });
+  progress({
+    stage: 'done',
+    current: 1,
+    total: 1,
+    message: `${stats.nodes} nodes, ${stats.edges} edges in ${(info.durationMs / 1000).toFixed(1)}s`,
+  });
   return info;
 }
 
-function computeStats(g: GraphBuilder, d: Awaited<ReturnType<typeof discover>>, rs: ReturnType<typeof resolve>): RepoStats {
+function computeStats(
+  g: GraphBuilder,
+  d: Awaited<ReturnType<typeof discover>>,
+  rs: ReturnType<typeof resolve>,
+): RepoStats {
   const byNodeKind: Partial<Record<NodeKind, number>> = {};
   const byEdgeKind: Partial<Record<EdgeKind, number>> = {};
-  for (const n of g.nodes.values()) byNodeKind[n.kind] = (byNodeKind[n.kind] ?? 0) + 1;
+  let endpointsInTests = 0;
+  for (const n of g.nodes.values()) {
+    if (n.kind === 'endpoint' && n.props.isTest) endpointsInTests++;
+    else byNodeKind[n.kind] = (byNodeKind[n.kind] ?? 0) + 1;
+  }
   for (const e of g.edges.values()) byEdgeKind[e.kind] = (byEdgeKind[e.kind] ?? 0) + 1;
   const langMap = new Map<string, { files: number; loc: number }>();
   let loc = 0;
@@ -166,6 +195,8 @@ function computeStats(g: GraphBuilder, d: Awaited<ReturnType<typeof discover>>, 
     byEdgeKind,
     unresolvedImports: rs.unresolvedImports,
     unresolvedCalls: rs.unresolvedCalls,
+    externalCalls: rs.externalCalls,
+    endpointsInTests,
   };
 }
 
