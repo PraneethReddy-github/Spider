@@ -28,6 +28,32 @@ export function layoutMap(
   nodes: LayoutInput[],
   edges: { src: string; dst: string; weight: number }[],
 ): Map<string, Pos> {
+  // Same input → same picture, so recent layouts are reused (theme switches, re-renders, going back a
+  // level skip the multi-second relaxation of 20k-node views). Callers get a copy they may mutate.
+  const key = layoutKey(nodes, edges);
+  let hit = recent.get(key);
+  if (!hit) {
+    hit = computeLayout(nodes, edges);
+    recent.set(key, hit);
+    if (recent.size > 4) recent.delete(recent.keys().next().value as string);
+  }
+  return new Map(hit);
+}
+
+const recent = new Map<string, Map<string, Pos>>();
+
+/** FNV-1a over the layout input; collisions only cost a wrong cached picture, never data. */
+function layoutKey(nodes: LayoutInput[], edges: { src: string; dst: string; weight: number }[]): string {
+  let h = 0x811c9dc5;
+  const mix = (str: string) => {
+    for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193);
+  };
+  for (const n of nodes) mix(`${n.id}|${n.parent ?? ''}|${n.size};`);
+  for (const e of edges) mix(`${e.src}>${e.dst}:${e.weight};`);
+  return `${nodes.length}:${edges.length}:${h >>> 0}`;
+}
+
+function computeLayout(nodes: LayoutInput[], edges: { src: string; dst: string; weight: number }[]): Map<string, Pos> {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const kids = new Map<string, string[]>();
   const parentOf = (id: string) => {
@@ -41,18 +67,37 @@ export function layoutMap(
     list.push(n.id);
   }
 
-  // ancestor chain lookup: child-of-`group` that contains `id`
-  const childUnder = (id: string, group: string): string | undefined => {
-    let cur = id;
-    for (let guard = 0; guard < 64; guard++) {
-      const p = parentOf(cur);
-      if (p === group) return cur;
-      if (p === ROOT) return undefined;
-      cur = p;
+  // Each edge belongs to exactly one group: the deepest group holding both ends, where it links the two
+  // children of that group containing them. Bucketing once keeps layout O(edges × depth), not
+  // O(groups × edges) (thousands of class/file groups at L3).
+  const chainOf = (id: string): string[] => {
+    const chain = [id];
+    for (let cur = id, guard = 0; guard < 64; guard++) {
+      cur = parentOf(cur);
+      chain.push(cur);
+      if (cur === ROOT) break;
     }
-    return undefined;
+    return chain; // id, parent, …, ROOT
   };
+  const groupEdges = new Map<string, { a: string; b: string; weight: number }[]>();
+  for (const e of edges) {
+    if (!byId.has(e.src) || !byId.has(e.dst)) continue;
+    const cs = chainOf(e.src);
+    const cd = chainOf(e.dst);
+    // walk both chains from the root down while they agree; the last shared entry is the group
+    let i = cs.length - 1;
+    let j = cd.length - 1;
+    while (i > 0 && j > 0 && cs[i - 1] === cd[j - 1]) {
+      i--;
+      j--;
+    }
+    if (cs[i] !== cd[j] || i === 0 || j === 0) continue; // one end contains the other, or unrelated
+    let list = groupEdges.get(cs[i]);
+    if (!list) groupEdges.set(cs[i], (list = []));
+    list.push({ a: cs[i - 1], b: cd[j - 1], weight: e.weight });
+  }
 
+  const huge = nodes.length > 5000;
   const rel = new Map<string, Pos>(); // position relative to the parent group's centre
   const radiusOf = new Map<string, number>();
 
@@ -60,22 +105,23 @@ export function layoutMap(
     const members = (kids.get(group) ?? []).slice().sort();
     for (const m of members) if (kids.has(m)) radiusOf.set(m, layoutGroup(m));
     const g = new Graph({ type: 'undirected' });
+    // big maps (thousands of small class groups at L3): tiny groups keep a tight spiral, no relaxation
+    const settled = huge && members.length <= 8;
     members.forEach((m, i) => {
       const r = radiusOf.get(m) ?? byId.get(m)?.size ?? 5;
-      const d = 14 * Math.sqrt(i + 1);
-      g.addNode(m, { x: Math.cos(i * GOLDEN) * d * 4, y: Math.sin(i * GOLDEN) * d * 4, size: r });
+      const d = settled ? 3.2 * r * Math.sqrt(i + 0.5) : 14 * Math.sqrt(i + 1) * 4;
+      g.addNode(m, { x: Math.cos(i * GOLDEN) * d, y: Math.sin(i * GOLDEN) * d, size: r });
     });
-    if (members.length > 1) {
-      for (const e of edges) {
-        const a = childUnder(e.src, group);
-        const b = childUnder(e.dst, group);
-        if (!a || !b || a === b) continue;
-        if (g.hasEdge(a, b)) g.updateEdgeAttribute(a, b, 'weight', (w: number) => w + e.weight);
-        else g.addEdge(a, b, { weight: e.weight });
+    if (members.length > 1 && !settled) {
+      for (const { a, b, weight } of groupEdges.get(group) ?? []) {
+        if (a === b) continue;
+        if (g.hasEdge(a, b)) g.updateEdgeAttribute(a, b, 'weight', (w: number) => w + weight);
+        else g.addEdge(a, b, { weight });
       }
       const n = g.order;
+      // shortcut: > 5k-member groups get few FA2 passes on the main thread; move to the FA2 worker if they must look tighter
       forceAtlas2.assign(g, {
-        iterations: n > 1500 ? 60 : n > 400 ? 120 : 200,
+        iterations: n > 5000 ? 15 : n > 1500 ? 60 : n > 400 ? 120 : 200,
         getEdgeWeight: (_e, attr) => Math.log2(1 + (attr.weight as number)),
         settings: {
           ...forceAtlas2.inferSettings(g),
@@ -86,7 +132,9 @@ export function layoutMap(
           slowDown: 2,
         },
       });
-      noverlap.assign(g, { maxIterations: 120, settings: { margin: 6, ratio: 1.05 } });
+      // noverlap costs ~0.3 s per pass at 17k members and can't separate that many nodes at fit zoom anyway;
+      // huge groups rely on FA2's adjustSizes and a deeper zoom (GraphCanvas lowers minCameraRatio)
+      if (n <= 5000) noverlap.assign(g, { maxIterations: 120, settings: { margin: 6, ratio: 1.05 } });
     }
     // centre on the bounding box and measure the enclosing radius
     let minX = Number.POSITIVE_INFINITY;

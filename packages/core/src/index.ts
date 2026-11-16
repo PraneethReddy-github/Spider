@@ -16,8 +16,19 @@ export { readOverrides, writeOverrides } from './overrides.js';
 export { markdownReport } from './query/report.js';
 export type { MatrixRequest } from './query/architecture.js';
 export { SqliteStore } from './store/sqlite.js';
-export { QueryService } from './query/service.js';
+export { QueryService, projectionKey } from './query/service.js';
+export type { SearchIndex } from './query/service.js';
 export { parseSource, getParser, PARSEABLE_LANGUAGES } from './parse/parser.js';
 export { getExtractor, extractableLanguages } from './languages/index.js';
 export type * from './languages/types.js';
 export { toDot, toGraphML } from './query/export.js';
+export {
+  buildGraph,
+  diffGraphs,
+  diffMarkdown,
+  diffRevisions,
+  isGitRoot,
+  localRefs,
+  resolveCommit,
+} from './diff/index.js';
+export type { BuiltGraph, DiffOptions } from './diff/index.js';

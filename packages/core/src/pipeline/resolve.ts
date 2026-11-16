@@ -4,6 +4,11 @@ import type { GraphBuilder } from '../graph/builder.js';
 import { ids } from '../graph/ids.js';
 import type { DeclFact, EndpointFact, FileFacts, MountFact } from '../languages/types.js';
 import type { Discovery } from './discover.js';
+import { resolveCsharpImports } from './resolve-csharp.js';
+import { resolveData } from './resolve-data.js';
+import { resolveHttp } from './resolve-http.js';
+import { resolveJvmImports } from './resolve-jvm.js';
+import { resolveNative } from './resolve-native.js';
 
 export interface ResolveStats {
   unresolvedImports: number;
@@ -261,12 +266,12 @@ const PY_STDLIB = new Set([
   'tomllib',
 ]);
 
-interface SymbolEntry {
+export interface SymbolEntry {
   id: string;
   decl: DeclFact;
 }
 
-interface FileTable {
+export interface FileTable {
   path: string;
   fileId: string;
   facts: FileFacts;
@@ -278,6 +283,8 @@ interface FileTable {
   bindings: Map<string, Map<string, Binding>>;
   /** Shared resolution context (module resolvers, id indices). */
   ctx: ResolveCtx;
+  /** Statically typed language: unbound names are never guessed by name (set by its import resolver). */
+  strict?: boolean;
 }
 
 interface ResolveCtx {
@@ -287,7 +294,7 @@ interface ResolveCtx {
   byFileId: Map<string, FileTable>;
 }
 
-interface Binding {
+export interface Binding {
   ref: string;
   isNew: boolean;
   isType?: boolean;
@@ -474,9 +481,14 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     }
   }
 
+  const allTables = [...tables.values()];
+  // Go / Rust: package & module scoping in resolve-native.ts (their tables leave `tables` here)
+  resolveNative(g, d, tables, globalByName, stats, emitEndpoint);
+
   /* ---------- 2. import resolution ---------- */
   for (const table of tables.values()) {
     const { facts, fileId, path: p } = table;
+    if (facts.language === 'java' || facts.language === 'kotlin' || facts.language === 'csharp') continue;
     for (const imp of facts.imports) {
       const target =
         facts.language === 'python' ? pyResolver.resolve(p, imp.specifier) : jsResolver.resolve(p, imp.specifier);
@@ -532,6 +544,9 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     }
   }
 
+  resolveJvmImports(g, d, tables, stats);
+  resolveCsharpImports(g, d, tables, stats);
+
   /* ---------- 3. inheritance ---------- */
   for (const table of tables.values()) {
     for (const [qn, entry] of table.own) {
@@ -567,7 +582,8 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
       const callerId = call.callerQname
         ? (table.own.get(call.callerQname)?.id ?? nearestOwner(table, call.callerQname))
         : table.fileId;
-      const targets = lookupDotted(table, call.callee, tables, globalByName, call.callerQname);
+      let targets = lookupDotted(table, call.callee, tables, globalByName, call.callerQname);
+      if (table.strict) targets = targets?.filter((t) => t.confidence >= 0.9);
       if (!targets || targets.length === 0) {
         const kind = classifyUnbound(table, first, call.callerQname);
         if (kind === 'external') stats.externalCalls++;
@@ -639,12 +655,16 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
     }
   }
 
+  /* ---------- 7. cross-language HTTP calls (C-19) and datastores (C-20) ---------- */
+  resolveHttp(g, allTables);
+  resolveData(g, allTables, tables, globalByName);
+
   return stats;
 }
 
 /* ---------- helpers ---------- */
 
-function nearestOwner(table: FileTable, qname: string): string {
+export function nearestOwner(table: FileTable, qname: string): string {
   const parts = qname.split('.');
   while (parts.length) {
     const e = table.own.get(parts.join('.'));
@@ -780,7 +800,7 @@ function isInterface(owner: { entry: SymbolEntry }): boolean {
 /**
  * Resolves a dotted reference (`foo`, `ns.foo`, `Class.method`, `this.method`, `obj.method`) from a file.
  */
-function lookupDotted(
+export function lookupDotted(
   table: FileTable,
   dotted: string,
   tables: Map<string, FileTable>,
@@ -804,7 +824,8 @@ function lookupDotted(
       if (field) {
         const owner = classOfBinding(table, field, tables, globalByName, depth);
         if (owner === 'external') return undefined;
-        if (owner && !isInterface(owner)) return memberOf(owner, rest.slice(1), tables, globalByName);
+        const m = owner ? memberOf(owner, rest.slice(1), tables, globalByName) : undefined;
+        if (owner && (m || !isInterface(owner))) return m; // interfaces bind only when they declare the member
       }
       // inherited
       const inherited = findInherited(table, cls, rest[0], tables, globalByName, 0);
@@ -835,7 +856,8 @@ function lookupDotted(
     if (binding) {
       const owner = classOfBinding(table, binding, tables, globalByName, depth);
       if (owner === 'external') return undefined; // instance of a library type
-      if (owner && !isInterface(owner)) return memberOf(owner, rest, tables, globalByName);
+      const m = owner ? memberOf(owner, rest, tables, globalByName) : undefined;
+      if (owner && (m || !isInterface(owner))) return m; // interfaces bind only when they declare the member
     }
   }
 
@@ -883,7 +905,7 @@ function classifyUnbound(table: FileTable, head: string, contextQname?: string):
   return 'unknown';
 }
 
-function findBinding(table: FileTable, name: string, contextQname?: string): Binding | undefined {
+export function findBinding(table: FileTable, name: string, contextQname?: string): Binding | undefined {
   const parts = contextQname ? contextQname.split('.') : [];
   while (true) {
     const b = table.bindings.get(parts.join('.'))?.get(name);

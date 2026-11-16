@@ -56,14 +56,19 @@ export class GraphBuilder {
       confidence: opts.confidence ?? 1,
       props: { ...(opts.props ?? {}), ...(opts.evidence ? { evidence: [opts.evidence] } : {}) },
     };
-    this.edges.set(id, e);
-    let o = this.outIndex.get(src);
-    if (!o) this.outIndex.set(src, (o = new Set()));
-    o.add(id);
-    let i = this.inIndex.get(dst);
-    if (!i) this.inIndex.set(dst, (i = new Set()));
-    i.add(id);
+    this.putEdge(e);
     return e;
+  }
+
+  /** Inserts a stored edge as-is (id, weight, props kept); used by the store when loading. */
+  putEdge(e: GraphEdge): void {
+    this.edges.set(e.id, e);
+    let o = this.outIndex.get(e.src);
+    if (!o) this.outIndex.set(e.src, (o = new Set()));
+    o.add(e.id);
+    let i = this.inIndex.get(e.dst);
+    if (!i) this.inIndex.set(e.dst, (i = new Set()));
+    i.add(e.id);
   }
 
   removeEdge(id: string): void {

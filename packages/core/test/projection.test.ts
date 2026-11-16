@@ -88,10 +88,10 @@ describe('projection truncation', () => {
   it('caps at MAX_NODES with a reason', () => {
     const g = new GraphBuilder();
     g.addNode({ id: 'repo', kind: 'repository', name: 'r' });
-    for (let i = 0; i < 6100; i++) g.addNode({ id: `f${i}`, kind: 'file', name: `f${i}`, parentId: 'repo' });
+    for (let i = 0; i < 20100; i++) g.addNode({ id: `f${i}`, kind: 'file', name: `f${i}`, parentId: 'repo' });
     const p = new QueryService(g, {}).projection({ level: 'L1' });
-    expect(p.nodes.length).toBe(6000);
+    expect(p.nodes.length).toBe(20000);
     expect(p.meta.truncated).toBe(true);
-    expect(p.meta.truncatedReason).toBe('Showing first 6,000 of 6,100 nodes. Collapse containers or use filters.');
+    expect(p.meta.truncatedReason).toBe('Showing first 20,000 of 20,100 nodes. Collapse containers or use filters.');
   });
 });

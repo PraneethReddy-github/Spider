@@ -4,6 +4,7 @@ import Graph from 'graphology';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type Sigma from 'sigma';
 import { api } from '../api';
+import { useDiffOverlay } from '../diff';
 import { fmtNum, nodeLabel } from '../format';
 import { GraphCanvas } from '../graph/GraphCanvas';
 import { Minimap } from '../graph/Minimap';
@@ -49,9 +50,8 @@ export function MapView({ repoId }: { repoId: string }) {
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [sigma, setSigma] = useState<Sigma>();
   const query = useProjection(repoId);
-  const data = query.data;
   const s = useStore();
-  const marks = useMarks(repoId);
+  const { data, marks } = useDiffOverlay(query.data, useMarks(repoId)); // compare mode (diff.ts)
   const reveal = useReveal();
   const viewKey = `${repoId}:${s.level}:${[...s.expanded].sort().join(',')}`;
   const fitKey = useRef('');

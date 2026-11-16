@@ -55,6 +55,8 @@ lines into `JobProgress.log` and `message`, one per stage and 10 % step (e.g. `r
 | `GET /repos/:id/matrix` | `level=L1|L2` (default L1), `expanded=id,id`, `includeTests=true` | `MatrixResult` `{ nodes, cells: { i, j, weight, kinds }[], layers }` — dependency structure matrix over the same roll-up as `/graph` (expanded groups, externals, packages and non-source files left out). Row `i` = source, column `j` = target, `kinds` = weight per edge kind. Nodes are ordered by inferred layer (`layers[k]`; 0 = depends on nothing in the matrix, cycles share a layer) then name, so dependencies sit below the diagonal and cells with `j > i` are upward or cyclic |
 | `GET /repos/:id/externals` | — | `ExternalUsage[]` `{ node, total, users: { node, weight }[] }` — externals with the non-test files that import/call/extend/reference them, by `total` desc |
 | `GET /repos/:id/report` | `format=md` (default) | `text/markdown` "Architecture of <name>": overview, languages/frameworks, subsystems (key files, dependencies), layering of subsystems, endpoints table, hubs by PageRank and betweenness, diagnostics summary. Same as `spider report <repo> [-o file]` |
+| `GET /repos/:id/diff` | `base=<ref>` (required), `head=<ref>` (default: the working tree on disk) | `GraphDiff` `{ base, head, nodes: { added, removed, changed }, edges: { added, removed }, diagnostics: { newCycles, resolvedCycles, newViolations, resolvedViolations }, summary, ancestors }` — see *Graph diff* below. Local git repos only (repo root must be a work tree root) → else 400; unknown or option-like ref → 400; unknown repo → 404 |
+| `GET /repos/:id/refs` | — | `RemoteRefs` `{ defaultBranch (checked-out branch), branches, tags }` of a local git repo (400 otherwise) |
 | `GET /repos/:id/export` | `format=json|dot|graphml` | full graph JSON `{ info, nodes, edges }`, Graphviz text (`text/vnd.graphviz`) or GraphML (`application/graphml+xml`) |
 
 Edge kinds: `contains, imports, exports, calls, instantiates, extends, implements, references,
@@ -97,3 +99,31 @@ changed files are re-parsed: the job's `[parse]` log line reads `N reused, M re-
 
 Analyses started by the server run on a worker thread (parse+extract on a further pool of up to 4
 threads), so the API stays responsive while analysing (fastify: `GET /health` max 9 ms).
+
+## Graph diff
+
+`GET /repos/:id/diff?base=main` and `spider diff [repo|path] --base main [--head HEAD] [--format md|json] [-o file]`
+(exit code 0 whatever the diff contains; 1 on errors).
+
+- **How**: the base revision (and `head`, when given) is written to `SPIDER_HOME/tmp/diff-<uuid>` with
+  `git archive <sha> | tar -x` — only the object database is read, the user's working tree, index and
+  refs are never touched, and the temporary tree is always deleted. Both sides run discover → extract →
+  resolve → enrich in memory (nothing is persisted) and reuse the per-file extraction cache, so only files
+  that differ are parsed. Without `head` the working tree is analysed as it is on disk (uncommitted and
+  untracked-but-not-ignored files included). The base run's subsystems seed the head run, so unchanged
+  subsystems keep their ids; the repo's subsystem overrides apply to both sides.
+- **Matching** is by deterministic id. `edges` lists relationship edges only (`contains`, `exports`,
+  `member_of` follow from node changes). `changed` nodes record `{ field: [base, head] }` for name, parent,
+  span *length* (a span that only moved is not a change), `metrics.loc|complexity|fanIn|fanOut` and props;
+  PageRank, betweenness and churn are not diffed (they move with unrelated changes, churn needs git).
+  Endpoint ids include their line, so a moved route shows as removed + added.
+- **Diagnostics**: cycles and layer violations are keyed by type + node ids.
+- **`ancestors`**: id → containment chain (parent first, up to `repo`) for every id referenced, so a
+  client can place changes on a rolled-up projection (the web app's Compare overlay does).
+- **Synchronous** with a 120 s limit (→ 504; the work still finishes and cleans up). A cached diff of
+  this repo (~1 500 nodes) answers in 0.3 s; a cold one takes ~4 s. Resolve/enrich run on the server's event
+  loop, so other requests wait while a large diff resolves.
+
+The Markdown summary (`--format md`, the default) is sized for a PR comment: counts table, new/resolved
+cycles and layer violations, then the first 25 added/removed symbols and new/dropped dependencies.
+`docs/examples/spider-diff.yml` is an example GitHub workflow that posts it with `gh pr comment`.

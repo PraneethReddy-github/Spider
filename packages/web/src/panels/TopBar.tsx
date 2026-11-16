@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { useDiff } from '../diff';
 import { EDITORS } from '../editor';
 import { download, exportTarget } from '../graph/exportImage';
 import { navigate } from '../router';
@@ -152,8 +153,8 @@ function ViewSwitch() {
           </button>
         )}
       >
-        {(close) =>
-          MORE_VIEWS.map((v) => (
+        {(close) => [
+          ...MORE_VIEWS.map((v) => (
             <button
               key={v.value}
               type="button"
@@ -168,8 +169,22 @@ function ViewSwitch() {
               {v.label}
               {view === v.value && <Check size={16} strokeWidth={1.5} className="menu-check" aria-hidden="true" />}
             </button>
-          ))
-        }
+          )),
+          <div key="sep" className="menu-sep" />,
+          <button
+            key="compare"
+            type="button"
+            className="menu-item"
+            role="menuitem"
+            onClick={() => {
+              setView('map');
+              useDiff.getState().setOpen(true);
+              close();
+            }}
+          >
+            Compare with a revision…
+          </button>,
+        ]}
       </MenuButton>
     </div>
   );

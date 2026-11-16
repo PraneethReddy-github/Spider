@@ -1,0 +1,43 @@
+# Example only — not active CI. Copy to .github/workflows/spider-diff.yml in the repository to analyse.
+# Posts (or updates) a Spider graph-diff summary on every pull request.
+name: Spider graph diff
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the base revision must be in the clone for `git archive`
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Spider is not published yet: build it from source. Replace with an install of the released CLI.
+      - name: Build Spider
+        run: |
+          git clone --depth 1 https://github.com/OWNER/spider.git "$RUNNER_TEMP/spider"
+          cd "$RUNNER_TEMP/spider"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build:lib
+
+      - name: Diff the graph against the base branch
+        env:
+          SPIDER_HOME: ${{ runner.temp }}/spider-home
+        run: |
+          node "$RUNNER_TEMP/spider/packages/cli/dist/index.js" diff . \
+            --base "origin/${{ github.base_ref }}" --head HEAD -o spider-diff.md
+
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file spider-diff.md --edit-last || gh pr comment ${{ github.event.pull_request.number }} --body-file spider-diff.md

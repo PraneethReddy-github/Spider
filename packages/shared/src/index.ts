@@ -259,3 +259,4 @@ export interface RemoteRefs {
 }
 
 export * from './schemas.js';
+export * from './diff.js';

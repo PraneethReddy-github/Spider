@@ -1,0 +1,46 @@
+{
+  "name": "spider-vscode",
+  "displayName": "Spider",
+  "description": "Open the Spider codebase map inside VS Code and reveal the code under the cursor.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "spider",
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Visualization"],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      { "command": "spider.openMap", "title": "Spider: Open map" },
+      { "command": "spider.reveal", "title": "Spider: Reveal in Spider" }
+    ],
+    "menus": {
+      "editor/context": [{ "command": "spider.reveal", "group": "navigation@90" }]
+    },
+    "configuration": {
+      "title": "Spider",
+      "properties": {
+        "spider.command": {
+          "type": "string",
+          "default": "spider",
+          "description": "Spider CLI used to start the server: a command on PATH, or the path to packages/cli/dist/index.js (run with node)."
+        },
+        "spider.host": { "type": "string", "default": "127.0.0.1", "description": "Host of the Spider server." },
+        "spider.port": { "type": "number", "default": 4747, "description": "Port of the Spider server." },
+        "spider.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start `spider serve` when no server answers on the port."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.85.0"
+  }
+}

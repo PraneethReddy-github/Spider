@@ -11,7 +11,10 @@ import {
   deleteRepo,
   listRepos,
   loadRepo,
+  openSearchIndex,
+  repoDir,
   spiderHome,
+  storedView,
   toDot,
   toGraphML,
 } from '@spider/core';
@@ -33,6 +36,7 @@ import {
 } from '@spider/shared';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { registerArchitectureRoutes } from './architecture.js';
+import { registerDiffRoutes } from './diff.js';
 import { type RepoWatcher, createRepoWatcher } from './watch.js';
 
 export interface ServerOptions {
@@ -62,11 +66,21 @@ const services = new Map<string, Promise<{ q: QueryService; info: RepoInfo }>>()
 async function getService(repoId: string, home?: string) {
   let p = services.get(repoId);
   if (!p) {
-    p = loadRepo(repoId, home).then(({ graph, meta, info }) => ({ q: new QueryService(graph, meta), info }));
+    p = loadRepo(repoId, home).then(async ({ graph, meta, info }) => ({
+      q: new QueryService(graph, meta, await openSearchIndex(repoId, home)),
+      info,
+    }));
     services.set(repoId, p);
     p.catch(() => services.delete(repoId));
   }
   return p;
+}
+
+/** Forgets a repo's loaded graph and closes its search index. */
+function dropService(repoId: string) {
+  const p = services.get(repoId);
+  services.delete(repoId);
+  p?.then(({ q }) => q.close()).catch(() => {});
 }
 
 /** Validates `query` against a shared schema; on failure replies 400 `{error}` and returns undefined. */
@@ -128,7 +142,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
       .then((info) => {
         job.status = 'done';
         job.repoId = info.repoId;
-        services.delete(info.repoId);
+        dropService(info.repoId);
         publish(job);
         const event: RepoEvent = { type: 'updated', repoId: info.repoId, analysedAt: info.analysedAt };
         for (const listener of repoListeners.get(info.repoId) ?? []) listener(event);
@@ -188,6 +202,14 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/repos/:id', async (req, reply) => {
+    // cold start: repo.json answers without waiting for the graph to load (large repos take seconds)
+    if (!services.has(req.params.id) && /^[\w-]+$/.test(req.params.id)) {
+      const info = await fs
+        .readFile(path.join(repoDir(spiderHome(home), req.params.id), 'repo.json'), 'utf8')
+        .then((raw) => JSON.parse(raw) as RepoInfo)
+        .catch(() => undefined);
+      if (info) return info;
+    }
     try {
       const { info } = await getService(req.params.id, home);
       return info;
@@ -197,7 +219,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   });
 
   app.delete<{ Params: { id: string } }>('/api/v1/repos/:id', async (req) => {
-    services.delete(req.params.id);
+    dropService(req.params.id);
     watcher?.remove(req.params.id);
     await deleteRepo(req.params.id, home);
     return { ok: true };
@@ -225,6 +247,12 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   app.get<RepoReq>('/api/v1/repos/:id/graph', async (req, reply) => {
     const p = valid(graphQuerySchema, req.query, reply);
     if (!p) return reply;
+    // cold start: answer default views from the precomputed copy while the full graph loads
+    const raw = await storedView(req.params.id, p, home);
+    if (raw) {
+      void getService(req.params.id, home).catch(() => {});
+      return reply.type('application/json').send(raw);
+    }
     return withService(req.params.id, (q) =>
       p.focus && !q.node(p.focus) ? reply.code(404).send({ error: 'focus node not found' }) : q.projection(p),
     );
@@ -317,11 +345,13 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     });
   });
 
+  registerDiffRoutes(app, { home, repoInfo: async (id) => (await getService(id, home)).info });
+
   registerArchitectureRoutes(app, {
     home,
     withService,
     invalidate: async (repoId) => {
-      services.delete(repoId);
+      dropService(repoId);
       const { info } = await getService(repoId, home);
       const event: RepoEvent = { type: 'updated', repoId, analysedAt: info.analysedAt };
       for (const listener of repoListeners.get(repoId) ?? []) listener(event);

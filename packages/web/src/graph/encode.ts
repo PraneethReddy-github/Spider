@@ -20,7 +20,7 @@ export interface EncodeOptions {
   hideAmbiguous?: boolean;
   colorBySubsystem?: boolean;
   /** Node ids to mark with a diagnostic ring. */
-  marks?: Map<string, 'danger' | 'warn'>;
+  marks?: Map<string, 'danger' | 'warn' | 'ok'>;
   /** Edge ids drawn as a path/trace (accent, 2.5 px). */
   pathEdges?: Set<string>;
   /** Label every node (small query views) as long as the label cap allows. */
@@ -101,7 +101,7 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
     let fill = look.fill;
     if (o.colorBySubsystem && n.props.subsystem) fill = subsystemColor(String(n.props.subsystem));
     else if (o.colorBySubsystem && n.kind === 'subsystem') fill = subsystemColor(n.id);
-    if (n.props.isTest) fill = blend(fill, 0.4, t.bgCanvas);
+    if (n.props.isTest || n.props.ghost) fill = blend(fill, 0.4, t.bgCanvas);
     const mark = o.marks?.get(n.id);
     const p = prev.get(n.id);
     const isGroup = groups.has(n.id);
@@ -140,11 +140,19 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
     edges.push(e);
     const onPath = o.pathEdges?.has(e.id);
     const base = edgeColorOf(e.kind, o.theme);
+    const diffTone = e.props.diff === 'added' ? t.ok : e.props.diff === 'removed' ? t.danger : undefined;
     graph.addEdgeWithKey(e.id, e.src, e.dst, {
       kind: e.kind,
       weight: e.weight,
       size: onPath ? 2.5 : ambiguous ? 0.8 : edgeWidth(e.weight),
-      color: onPath ? accent : ambiguous ? blend(base, 0.5, t.bgCanvas) : base,
+      // compare mode (diff.ts): added edges in ok, removed ghost edges in faded danger
+      color: onPath
+        ? accent
+        : diffTone
+          ? blend(diffTone, ambiguous ? 0.5 : 1, t.bgCanvas)
+          : ambiguous
+            ? blend(base, 0.5, t.bgCanvas)
+            : base,
       type: e.kind === 'depends_on' ? 'line' : 'arrow',
       zIndex: onPath ? 2 : 1,
     });

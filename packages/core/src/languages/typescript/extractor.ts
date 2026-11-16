@@ -1,5 +1,6 @@
 import type { SyntaxNode } from '../../parse/parser.js';
 import { field, stringValue } from '../../parse/parser.js';
+import { callArgs } from '../args.js';
 import {
   type CallFact,
   type DeclFact,
@@ -54,8 +55,23 @@ export class TypeScriptExtractor implements LanguageExtractor {
     const ex = new Walker(facts, ctx);
     ex.visitChildren(root, { qname: undefined }, false, undefined);
     ex.detectFileRoutes();
+    dropClientRoutes(facts);
     return facts;
   }
+}
+
+// msw: `http.get('/x', resolver)` mocks a route for tests/storybook, it does not serve one
+const HTTP_CLIENT_LIBS = /^(axios|ky|got|superagent|ofetch|msw)$/;
+
+/** `api.get('/x')` on an HTTP client (the library or an instance made from it) is a request, not a route. */
+function dropClientRoutes(facts: FileFacts): void {
+  const clients = new Set<string>();
+  for (const i of facts.imports)
+    if (HTTP_CLIENT_LIBS.test(i.specifier))
+      for (const n of [i.namespace, ...i.names.map((x) => x.local)]) if (n) clients.add(n);
+  if (clients.size === 0) return;
+  for (const b of facts.bindings) if (clients.has(b.ref.split('.')[0])) clients.add(b.name);
+  facts.endpoints = facts.endpoints.filter((e) => !e.receiver || !clients.has(e.receiver));
 }
 
 class Walker {
@@ -65,6 +81,8 @@ class Walker {
   /** Router variable → its own prefix (Koa `new Router({ prefix })`, Hono `.basePath()`). */
   private routerPrefixes = new Map<string, string>();
   private seenRefs = new Set<string>();
+  /** Inline route handlers already walked as synthetic functions (start index). */
+  private inlined = new Set<number>();
 
   constructor(
     private facts: FileFacts,
@@ -159,6 +177,7 @@ class Walker {
             isNew: true,
             argCount: field(n, 'arguments')?.namedChildCount ?? 0,
             span: spanOf(n, this.ctx.path),
+            ...callArgs(n),
           });
         }
         this.visitChildren(n, scope, false, classQname);
@@ -168,7 +187,7 @@ class Walker {
       case 'function_expression':
       case 'function': {
         // anonymous function not bound to a declaration: attribute contents to enclosing scope
-        this.visitChildren(n, scope, false, classQname);
+        if (!this.inlined.has(n.startIndex)) this.visitChildren(n, scope, false, classQname);
         return;
       }
       case 'decorator':
@@ -457,7 +476,9 @@ class Walker {
     this.facts.decls.push(decl);
     if (exported) this.facts.exports.push({ name, span: decl.span });
     const body = field(fn, 'body');
-    if (body) this.visitChildren(body, { qname }, false, classQname);
+    // `(req, res) => orders.get(req, res)`: an expression body is itself the first thing to visit
+    if (body?.type === 'statement_block') this.visitChildren(body, { qname }, false, classQname);
+    else if (body) this.visit(body, { qname }, false, classQname);
   }
 
   private variableDecl(n: SyntaxNode, scope: Scope, exported: boolean, classQname: string | undefined): void {
@@ -569,7 +590,7 @@ class Walker {
     let callee = fnNode.type === 'identifier' || fnNode.type === 'member_expression' ? dottedText(fnNode) : '';
     if (fnNode.type === 'await_expression' || fnNode.type === 'parenthesized_expression') callee = '';
     if (callee && !callee.includes('(')) {
-      this.facts.calls.push({ callee, callerQname: scope.qname, argCount, span });
+      this.facts.calls.push({ callee, callerQname: scope.qname, argCount, span, ...callArgs(n) });
     }
 
     // Express/Fastify/Koa/Hono style routes: x.get('/path', ...handlers)
@@ -577,6 +598,13 @@ class Walker {
       const prop = field(fnNode, 'property')?.text ?? '';
       const objNode = field(fnNode, 'object');
       const receiver = objNode?.type === 'identifier' ? objNode.text : undefined;
+      // `getBackendSrv().post('/x', body)`, supertest `request(app).get('/')`: requests off a bare function call;
+      // member chains are routers (`app.route('/x').get(h)`, `.use(…).get(…)`, `withTypeProvider().get(…)`)
+      const chainFn = objNode?.type === 'call_expression' ? field(objNode, 'function') : undefined;
+      const chainName = chainFn ? (field(chainFn, 'property') ?? chainFn).text : '';
+      const requestChain =
+        (chainFn?.type === 'identifier' && !/^(express|fastify|Router|polka)$/.test(chainName)) ||
+        /^get[A-Z]/.test(chainName); // `deps.getBackendSrv().post(…)`
       if (prop === 'setGlobalPrefix') {
         const gp = stringValue(args.namedChildren[0]);
         if (gp !== undefined) this.mount({ prefix: gp, target: '', global: true, framework: 'nestjs', span });
@@ -586,7 +614,7 @@ class Walker {
         const kp = stringValue(args.namedChildren[0]);
         if (kp !== undefined) this.setRouterPrefix(receiver, kp);
       }
-      if (HTTP_METHODS.has(prop)) {
+      if (HTTP_METHODS.has(prop) && !requestChain) {
         let first = args.namedChildren[0];
         let p = stringValue(first);
         // koa-router named routes: router.get('name', '/path', handler)
@@ -605,14 +633,29 @@ class Walker {
           const target = prop === 'use' && koaT && args.namedChildren[1]?.type === 'call_expression' ? koaT : t;
           if (target) this.mount({ prefix: p, target, parent: receiver, span });
         }
-        if (p !== undefined && (p.startsWith('/') || p === '*' || p.startsWith('http'))) {
-          const last = args.namedChildren[args.namedChildren.length - 1];
+        const last = args.namedChildren[args.namedChildren.length - 1];
+        // a route ends in a handler; requests don't: `request.get('/x')`, `api.post('/x', { … })`,
+        // `this.get('/x', query)`, `this.httpClient.post('/x', body)`
+        const request =
+          prop !== 'route' &&
+          (last === first ||
+            (last?.type === 'object' && !objectProp(last, 'handler')) ||
+            /^(array|string|template_string)$/.test(last?.type ?? '') ||
+            objNode?.type === 'this' ||
+            /client$/i.test(field(objNode ?? fnNode, 'property')?.text ?? objNode?.text ?? ''));
+        if (
+          p !== undefined &&
+          !request &&
+          (p.startsWith('/') || p === '*' || p.startsWith('http')) &&
+          !p.includes('${')
+        ) {
           let handlerRef: string | undefined;
           if (last && last !== first) {
             if (last.type === 'identifier' || last.type === 'member_expression') handlerRef = dottedText(last);
             else if (FUNCTION_TYPES.has(last.type)) {
               const name = `${prop.toUpperCase()} ${p}`;
               this.functionLike(last, name, scope, false, 'function', last, classQname);
+              this.inlined.add(last.startIndex);
               handlerRef = this.q(scope, name);
             }
           }

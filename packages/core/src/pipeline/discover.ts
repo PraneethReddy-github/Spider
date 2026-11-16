@@ -15,7 +15,7 @@ export interface DiscoveredFile {
 
 export interface Manifest {
   path: string;
-  ecosystem: 'npm' | 'pypi' | 'go' | 'cargo' | 'maven';
+  ecosystem: 'npm' | 'pypi' | 'go' | 'cargo' | 'maven' | 'nuget';
   name: string;
   version?: string;
   dir: string;
@@ -155,7 +155,10 @@ const TEST_PATTERNS = [
   /(^|\/)(test|tests|__tests__|spec|specs|e2e|__mocks__)\//i,
   /\.(test|spec)\.[cm]?[jt]sx?$/i,
   /(^|\/)test_[^/]+\.py$/i,
+  /(^|\/)tests\.py$/i, // Django app tests
   /_test\.(py|go)$/i,
+  /[a-z0-9](Test|Tests|IT)\.(java|kt|cs)$/,
+  /(^|\/)[\w.]+\.(Unit|Integration|Functional)?Tests?\//,
   /(^|\/)conftest\.py$/i,
 ];
 
@@ -210,8 +213,11 @@ export async function discover(root: string, onProgress?: (n: number) => void): 
         if (ent.name === 'package.json') manifests.push(await readNpmManifest(abs, rel, frameworks));
         else if (ent.name === 'pyproject.toml' || ent.name === 'requirements.txt' || ent.name === 'setup.py')
           manifests.push(await readPyManifest(abs, rel, frameworks));
-        else if (ent.name === 'go.mod') manifests.push(await readGoMod(abs, rel));
-        else if (ent.name === 'Cargo.toml') manifests.push(await readCargo(abs, rel));
+        else if (ent.name === 'go.mod') manifests.push(await readGoMod(abs, rel, frameworks));
+        else if (ent.name === 'Cargo.toml') manifests.push(await readCargo(abs, rel, frameworks));
+        else if (ent.name === 'pom.xml' || ent.name === 'build.gradle' || ent.name === 'build.gradle.kts')
+          manifests.push(await readJvmManifest(abs, rel, frameworks));
+        else if (ent.name.endsWith('.csproj')) manifests.push(await readCsproj(abs, rel, frameworks));
         else if (ent.name === 'tsconfig.json' || ent.name === 'jsconfig.json') {
           const tc = await readTsConfig(abs, rel);
           if (tc) tsconfigs.push(tc);
@@ -362,33 +368,124 @@ async function readPyManifest(abs: string, rel: string, frameworks: Set<string>)
   return m;
 }
 
-async function readGoMod(abs: string, rel: string): Promise<Manifest> {
+/** Go module path (key for import resolution) and `require`d modules (single-line and block form). */
+async function readGoMod(abs: string, rel: string, frameworks: Set<string>): Promise<Manifest> {
   const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
   const m: Manifest = { path: rel, ecosystem: 'go', name: dir || 'root', dir, deps: [], frameworks: [], extra: {} };
   try {
     const text = await fs.readFile(abs, 'utf8');
     const mod = /^module\s+(\S+)/m.exec(text);
     if (mod) m.name = mod[1];
-    const re = /^\s*([\w.\-\/]+\.[\w.\-\/]+)\s+v([\w.\-+]+)/gm;
+    const re = /^\s*(?:require\s+)?([\w.\-\/]+\.[\w.\-\/]+)\s+v([\w.\-+]+)(.*)$/gm;
     let mm: RegExpExecArray | null;
-    while ((mm = re.exec(text))) m.deps.push({ name: mm[1], version: mm[2], isDev: false });
+    while ((mm = re.exec(text))) {
+      m.deps.push({ name: mm[1], version: mm[2], isDev: false });
+      const fw = Object.entries(GO_FRAMEWORKS).find(([p]) => mm?.[1] === p || mm?.[1].startsWith(`${p}/`))?.[1];
+      if (fw && !/\/\/ indirect/.test(mm[3]) && !m.frameworks.includes(fw)) {
+        m.frameworks.push(fw);
+        frameworks.add(fw);
+      }
+    }
   } catch {
     /* ignore */
   }
   return m;
 }
 
-async function readCargo(abs: string, rel: string): Promise<Manifest> {
+const GO_FRAMEWORKS: Record<string, string> = {
+  'github.com/gin-gonic/gin': 'gin',
+  'github.com/labstack/echo': 'echo',
+  'github.com/go-chi/chi': 'chi',
+  'github.com/gorilla/mux': 'gorilla',
+  'google.golang.org/grpc': 'grpc',
+};
+
+const CARGO_FRAMEWORKS: Record<string, string> = {
+  axum: 'axum',
+  'actix-web': 'actix',
+  rocket: 'rocket',
+  tonic: 'grpc',
+};
+
+/** Cargo package name, dependencies (`[dependencies]`, `[dependencies.x]`, dev/build), workspace members. */
+async function readCargo(abs: string, rel: string, frameworks: Set<string>): Promise<Manifest> {
   const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
   const m: Manifest = { path: rel, ecosystem: 'cargo', name: dir || 'root', dir, deps: [], frameworks: [], extra: {} };
   try {
     const text = await fs.readFile(abs, 'utf8');
-    const name = /^\s*name\s*=\s*"([^"]+)"/m.exec(text);
-    if (name) m.name = name[1];
-    const section = text.split(/^\[dependencies\]/m)[1]?.split(/^\[/m)[0] ?? '';
-    for (const line of section.split('\n')) {
-      const mm = /^\s*([\w\-]+)\s*=/.exec(line);
-      if (mm) m.deps.push({ name: mm[1], isDev: false });
+    const pkg = /^\[package\][^[]*?^\s*name\s*=\s*"([^"]+)"/m.exec(text);
+    if (pkg) m.name = pkg[1];
+    let section = '';
+    for (const line of text.split('\n')) {
+      const head = /^\s*\[([^\]]+)\]/.exec(line);
+      if (head) {
+        section = head[1].trim();
+        const dotted = /^(?:workspace\.)?(dev-|build-)?dependencies\.([\w\-]+)$/.exec(section);
+        if (dotted) m.deps.push({ name: dotted[2], isDev: !!dotted[1] });
+        continue;
+      }
+      const dep = /^(?:workspace\.)?(dev-|build-)?dependencies$/.exec(section);
+      const mm = dep ? /^\s*([\w\-]+)\s*=/.exec(line) : null;
+      if (dep && mm) m.deps.push({ name: mm[1], isDev: !!dep[1] });
+    }
+    const members = /^\s*members\s*=\s*\[([^\]]*)\]/m.exec(text);
+    if (members) m.extra.members = [...members[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    for (const d of m.deps) {
+      const fw = CARGO_FRAMEWORKS[d.name];
+      if (fw && !d.isDev && !m.frameworks.includes(fw)) {
+        m.frameworks.push(fw);
+        frameworks.add(fw);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return m;
+}
+
+/** Maven `pom.xml` / Gradle build script: artifact name, dependencies (`group:artifact`), Spring detection. */
+async function readJvmManifest(abs: string, rel: string, frameworks: Set<string>): Promise<Manifest> {
+  const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
+  const m: Manifest = { path: rel, ecosystem: 'maven', name: dir || 'root', dir, deps: [], frameworks: [], extra: {} };
+  try {
+    const text = await fs.readFile(abs, 'utf8');
+    if (rel.endsWith('pom.xml')) {
+      const body = text.replace(/<parent>[\s\S]*?<\/parent>/, '').replace(/<dependencies>[\s\S]*$/, '');
+      const artifact = /<artifactId>([^<]+)<\/artifactId>/.exec(body);
+      if (artifact) m.name = artifact[1].trim();
+      const re =
+        /<dependency>\s*<groupId>([^<]+)<\/groupId>\s*<artifactId>([^<]+)<\/artifactId>([\s\S]*?)<\/dependency>/g;
+      let mm: RegExpExecArray | null;
+      while ((mm = re.exec(text)))
+        m.deps.push({ name: `${mm[1].trim()}:${mm[2].trim()}`, isDev: /<scope>\s*test\s*<\/scope>/.test(mm[3]) });
+    } else {
+      const re = /^\s*(\w+)\s*\(?\s*["']([\w.\-]+):([\w.\-]+)(?::[^"']*)?["']/gm;
+      let mm: RegExpExecArray | null;
+      while ((mm = re.exec(text))) m.deps.push({ name: `${mm[2]}:${mm[3]}`, isDev: /^test/i.test(mm[1]) });
+    }
+    if (/org\.springframework/.test(text)) {
+      m.frameworks.push('spring');
+      frameworks.add('spring');
+    }
+  } catch {
+    /* ignore */
+  }
+  return m;
+}
+
+/** `.csproj`: project name, `PackageReference`s, ASP.NET Core detection (web SDK or AspNetCore packages). */
+async function readCsproj(abs: string, rel: string, frameworks: Set<string>): Promise<Manifest> {
+  const dir = path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel);
+  const name = path.posix.basename(rel, '.csproj');
+  const m: Manifest = { path: rel, ecosystem: 'nuget', name, dir, deps: [], frameworks: [], extra: {} };
+  try {
+    const text = await fs.readFile(abs, 'utf8');
+    const re = /<PackageReference\s+Include="([^"]+)"(?:\s+Version="([^"]+)")?/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = re.exec(text))) m.deps.push({ name: mm[1], version: mm[2], isDev: false });
+    if (/Sdk="Microsoft\.NET\.Sdk\.Web"/.test(text) || m.deps.some((d) => d.name.startsWith('Microsoft.AspNetCore'))) {
+      m.frameworks.push('aspnetcore');
+      frameworks.add('aspnetcore');
     }
   } catch {
     /* ignore */

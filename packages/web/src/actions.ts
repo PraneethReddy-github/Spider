@@ -1,3 +1,4 @@
+import { postToHost } from './embed';
 import { useStore } from './store';
 
 /** Node actions shared by the details panel, context menu and keyboard shortcuts. */
@@ -47,6 +48,7 @@ export const actions = {
   },
   /** Hands an editor deep link to the OS (the browser asks before launching the app). */
   openInEditor(url: string) {
+    if (postToHost(url)) return;
     window.location.assign(url);
   },
   async copyId(id: string) {

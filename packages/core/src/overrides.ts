@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { RepoInfo, SubsystemOverrides } from '@spider/shared';
 import { repoDir, spiderHome } from './analyze.js';
 import { EMPTY_OVERRIDES, type SubsystemGroup, applySubsystems, groupsFromGraph } from './enrich/subsystems.js';
+import { QueryService } from './query/service.js';
 import { SqliteStore } from './store/sqlite.js';
 
 const file = (repoId: string, home?: string) => path.join(repoDir(spiderHome(home), repoId), 'overrides.json');
@@ -40,7 +41,9 @@ export async function writeOverrides(repoId: string, ov: SubsystemOverrides, hom
       info.stats.edges = graph.edges.size;
       await fs.writeFile(path.join(dir, 'repo.json'), JSON.stringify(info, null, 2));
     }
-    store.saveGraph(graph, { ...meta, subsystems: groups });
+    const next = { ...meta, subsystems: groups };
+    store.saveGraph(graph, next);
+    store.saveViews(new QueryService(graph, next).defaultViews());
   } finally {
     store.close();
   }

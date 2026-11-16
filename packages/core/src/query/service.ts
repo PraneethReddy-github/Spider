@@ -24,21 +24,125 @@ const DEFAULT_EDGE_KINDS: EdgeKind[] = [
   'exposes',
   'depends_on',
 ];
-const MAX_NODES = 6000;
+const MAX_NODES = 20000;
+const CACHE_SIZE = 16;
+/** Beyond this many substring candidates the indexed lookup costs more than a scan of cached lowercase names. */
+const FTS_MAX = 5000;
+
+/** Substring candidates for `search` (the store's FTS5 index); undefined = can't answer, scan instead. */
+export interface SearchIndex {
+  /** Ids (insertion order) whose name or qname contains `q`; undefined if more than `max` or unanswerable. */
+  substringIds(q: string, max: number): string[] | undefined;
+  /** A projection persisted with the graph (JSON) under `projectionKey(req)`, if any. */
+  viewJson?(key: string): string | undefined;
+  close?(): void;
+}
+
+/** Default-filter projections precomputed at persist time and served before the graph is loaded. */
+export const STORED_VIEW_LEVELS: ProjectionRequest['level'][] = ['L0', 'L1', 'L2', 'L3'];
+
+/** Order-insensitive cache key of a projection request (default filters normalise to the same key). */
+export function projectionKey(req: ProjectionRequest): string {
+  const sorted = (a?: string[]) => (a ? [...a].sort() : null);
+  const ek = sorted(req.edgeKinds);
+  const defaultKinds = ek?.join() === [...DEFAULT_EDGE_KINDS].sort().join();
+  return JSON.stringify([
+    req.level,
+    sorted(req.expanded) ?? [],
+    defaultKinds ? null : ek,
+    sorted(req.nodeKinds),
+    sorted(req.languages),
+    req.includeTests ?? false,
+    req.minConfidence ?? 0,
+    req.minWeight ?? 0,
+    req.focus ?? null,
+    req.focus ? (req.focusDepth ?? 1) : null,
+  ]);
+}
 
 export class QueryService {
+  /** Projections by request (LRU): repeat views and re-renders skip the roll-up. */
+  private readonly cache = new Map<string, Projection>();
+  private ix?: Indexed;
+  private storedViews = true;
+
   constructor(
     public readonly g: GraphBuilder,
     public readonly meta: Record<string, unknown>,
+    private readonly index?: SearchIndex,
   ) {}
 
+  /** Drops cached projections; call after mutating `g` in place (e.g. re-applying subsystem overrides). */
+  invalidate(): void {
+    this.cache.clear();
+    this.ix = undefined;
+    this.storedViews = false; // persisted views describe the graph as saved, not as mutated
+  }
+
+  /** The default-filter projection per level, keyed by `projectionKey`, for `SqliteStore.saveViews`. */
+  defaultViews(): Map<string, Projection> {
+    const out = new Map<string, Projection>();
+    for (const level of STORED_VIEW_LEVELS) out.set(projectionKey({ level }), this.computeProjection({ level }));
+    return out;
+  }
+
+  /** Dense integer view of the graph for the projection's hot loop; built once, dropped by `invalidate`. */
+  private indexed(): Indexed {
+    if (this.ix) return this.ix;
+    const nodes = [...this.g.nodes.values()];
+    const pos = new Map<string, number>();
+    nodes.forEach((nd, i) => pos.set(nd.id, i));
+    const parent = new Int32Array(nodes.length);
+    const sub = new Int32Array(nodes.length);
+    const test = new Uint8Array(nodes.length);
+    nodes.forEach((nd, i) => {
+      parent[i] = nd.parentId ? (pos.get(nd.parentId) ?? -1) : -1;
+      sub[i] = nd.kind === 'file' && nd.props.subsystem ? (pos.get(String(nd.props.subsystem)) ?? -1) : -1;
+      test[i] = nd.props.isTest ? 1 : 0;
+    });
+    const edges = [...this.g.edges.values()].filter((e) => !STRUCTURAL.has(e.kind));
+    const kinds: EdgeKind[] = [];
+    const src = new Int32Array(edges.length);
+    const dst = new Int32Array(edges.length);
+    const kind = new Uint8Array(edges.length);
+    edges.forEach((e, k) => {
+      src[k] = pos.get(e.src) ?? -1;
+      dst[k] = pos.get(e.dst) ?? -1;
+      let ki = kinds.indexOf(e.kind);
+      if (ki < 0) ki = kinds.push(e.kind) - 1;
+      kind[k] = ki;
+    });
+    this.ix = { nodes, pos, parent, sub, test, edges, src, dst, kind, kinds };
+    return this.ix;
+  }
+
+  /** Releases the search index (the store handle). Search falls back to scanning afterwards. */
+  close(): void {
+    this.index?.close?.();
+  }
+
   /* ---------- projections ---------- */
+
+  /** Cached `computeProjection`; callers must treat the result as read-only. */
+  projection(req: ProjectionRequest): Projection {
+    const key = projectionKey(req);
+    let p = this.cache.get(key);
+    if (p) {
+      this.cache.delete(key); // refresh LRU position
+    } else {
+      const stored = this.storedViews ? this.index?.viewJson?.(key) : undefined;
+      p = stored ? (JSON.parse(stored) as Projection) : this.computeProjection(req);
+      if (this.cache.size >= CACHE_SIZE) this.cache.delete(this.cache.keys().next().value as string);
+    }
+    this.cache.set(key, p);
+    return p;
+  }
 
   /**
    * Computes the visible node set for a view level plus explicitly expanded containers, then rolls
    * every relationship edge up to the nearest visible ancestor on both ends.
    */
-  projection(req: ProjectionRequest): Projection {
+  private computeProjection(req: ProjectionRequest): Projection {
     const g = this.g;
     const expanded = new Set(req.expanded ?? []);
     const edgeKinds = new Set(req.edgeKinds ?? DEFAULT_EDGE_KINDS);
@@ -132,61 +236,69 @@ export class QueryService {
     }
 
     // Externals & packages are always candidates; kept only if connected.
-    const externals = g.nodesOfKind('external').filter(acceptNode);
+    const externals = new Set(g.nodesOfKind('external').filter(acceptNode));
 
-    // Representative lookup: nearest visible ancestor (using containment, or subsystem for L0).
-    const repCache = new Map<string, string | undefined>();
-    const representative = (id: string): string | undefined => {
-      if (visible.has(id)) return id;
-      if (repCache.has(id)) return repCache.get(id);
-      let cur = g.getNode(id);
-      let rep: string | undefined;
-      while (cur) {
-        if (visible.has(cur.id)) {
-          rep = cur.id;
+    // Representative lookup: nearest visible ancestor (using containment, or subsystem for L0),
+    // memoised per node index in a typed array so the edge loop allocates nothing per edge.
+    const ix = this.indexed();
+    const n = ix.nodes.length;
+    const vis = new Uint8Array(n);
+    for (const id of visible.keys()) vis[ix.pos.get(id) as number] = 1;
+    const rep = new Int32Array(n).fill(-2); // -2 unknown, -1 none
+    const chain: number[] = [];
+    const repOf = (i: number): number => {
+      let cur = i;
+      let r = -1;
+      chain.length = 0;
+      while (cur >= 0) {
+        if (rep[cur] !== -2) {
+          r = rep[cur];
           break;
         }
-        if (req.level === 'L0' && cur.kind === 'file') {
-          const sub = cur.props.subsystem as string | undefined;
-          if (sub && visible.has(sub)) {
-            rep = sub;
-            break;
-          }
+        if (vis[cur]) {
+          r = cur;
+          break;
         }
-        cur = cur.parentId ? g.getNode(cur.parentId) : undefined;
+        const sub = ix.sub[cur];
+        if (req.level === 'L0' && sub >= 0 && vis[sub]) {
+          r = sub;
+          break;
+        }
+        chain.push(cur);
+        cur = ix.parent[cur];
       }
-      repCache.set(id, rep);
-      return rep;
+      for (const c of chain) rep[c] = r;
+      return r;
     };
 
-    const agg = new Map<string, GraphEdge>();
-    const usedExternals = new Set<string>();
-    for (const e of this.g.edges.values()) {
-      if (STRUCTURAL.has(e.kind) || !edgeKinds.has(e.kind)) continue;
-      if (e.confidence < minConf) continue;
-      const srcNode = g.getNode(e.src);
-      const dstNode = g.getNode(e.dst);
-      if (!srcNode || !dstNode) continue;
-      if (!includeTests && (srcNode.props.isTest || dstNode.props.isTest)) continue;
-      let s = representative(e.src);
-      let t = representative(e.dst);
-      if (!s && dstNode.kind === 'external' && externals.includes(dstNode)) {
-        continue;
-      }
-      if (!t && dstNode.kind === 'external' && (!nodeKinds || nodeKinds.has('external'))) {
-        t = dstNode.id;
-      }
-      if (!s && srcNode.kind === 'package') s = representative(srcNode.parentId ?? '') ?? undefined;
-      if (!s || !t || s === t) continue;
-      if (g.getNode(t)?.kind === 'external') usedExternals.add(t);
-      const key = `${e.kind}|${s}|${t}`;
+    const agg = new Map<number, GraphEdge>();
+    const usedExternals = new Set<number>();
+    const kindCount = ix.kinds.length;
+    for (let k = 0; k < ix.edges.length; k++) {
+      const e = ix.edges[k];
+      if (!edgeKinds.has(e.kind) || e.confidence < minConf) continue;
+      const si = ix.src[k];
+      const di = ix.dst[k];
+      if (si < 0 || di < 0) continue;
+      if (!includeTests && (ix.test[si] || ix.test[di])) continue;
+      let s = repOf(si);
+      let t = repOf(di);
+      const dstNode = ix.nodes[di];
+      if (s < 0 && dstNode.kind === 'external' && externals.has(dstNode)) continue;
+      if (t < 0 && dstNode.kind === 'external' && (!nodeKinds || nodeKinds.has('external'))) t = di;
+      if (s < 0 && ix.nodes[si].kind === 'package') s = ix.parent[si] >= 0 ? repOf(ix.parent[si]) : -1;
+      if (s < 0 || t < 0 || s === t) continue;
+      if (ix.nodes[t].kind === 'external') usedExternals.add(t);
+      const key = (s * n + t) * kindCount + ix.kind[k];
       let a = agg.get(key);
       if (!a) {
+        const src = ix.nodes[s].id;
+        const dst = ix.nodes[t].id;
         a = {
-          id: key,
+          id: `${e.kind}|${src}|${dst}`,
           kind: e.kind,
-          src: s,
-          dst: t,
+          src,
+          dst,
           weight: 0,
           confidence: 0,
           props: { leafCount: 0, ambiguous: e.props.ambiguous ?? false },
@@ -197,12 +309,15 @@ export class QueryService {
       a.props.leafCount = (a.props.leafCount as number) + 1;
       a.confidence = Math.max(a.confidence, e.confidence);
       if (!e.props.ambiguous) a.props.ambiguous = false;
-      if (e.src === s && e.dst === t) a.props.direct = true;
+      if (si === s && di === t) a.props.direct = true;
     }
-    for (const x of usedExternals) {
-      const n = g.getNode(x);
-      if (n) visible.set(x, n);
-    }
+    for (const x of usedExternals) visible.set(ix.nodes[x].id, ix.nodes[x]);
+    const representative = (id: string): string | undefined => {
+      if (visible.has(id)) return id;
+      const i = ix.pos.get(id);
+      const r = i === undefined ? -1 : repOf(i);
+      return r >= 0 ? ix.nodes[r].id : undefined;
+    };
     let edges = [...agg.values()].filter((e) => (req.minWeight ? e.weight >= req.minWeight : true));
 
     let focus: string | undefined;
@@ -394,21 +509,47 @@ export class QueryService {
     return { node, parents: this.g.ancestors(id), incoming, outgoing, children: children.slice(0, 500) };
   }
 
+  /**
+   * Ranked name search: exact > prefix > substring > qname substring > fuzzy, plus a centrality boost.
+   * Substring candidates come from the FTS5 index when there is one; fuzzy matches (score ≤ 40) can
+   * only reach the top `limit` when fewer than `limit` candidates score above 40, so only then is
+   * every node scanned — results are identical to a full scan either way.
+   */
   search(query: string, kinds?: string[], limit = 25): SearchHit[] {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     const ks = kinds ? new Set(kinds) : undefined;
+    const ix = this.indexed();
+    const ids = this.index?.substringIds(q, FTS_MAX);
+    if (ids) {
+      const pos = ids.map((id) => ix.pos.get(id)).filter((i): i is number => i !== undefined);
+      const hits = this.scoreAll(q, ks, pos);
+      if (hits.filter((h) => h.score > 40).length >= limit) return hits.slice(0, limit);
+    }
+    return this.scoreAll(q, ks).slice(0, limit);
+  }
+
+  /** Scores the nodes at `positions` (default: every node, in insertion order). */
+  private scoreAll(q: string, ks: Set<string> | undefined, positions?: number[]): SearchHit[] {
+    const ix = this.indexed();
+    ix.lower ??= {
+      name: ix.nodes.map((n) => n.name.toLowerCase()),
+      qname: ix.nodes.map((n) => (n.qname ?? '').toLowerCase()),
+    };
+    const { name: names, qname: qnames } = ix.lower;
     const hits: SearchHit[] = [];
-    for (const n of this.g.nodes.values()) {
+    const count = positions ? positions.length : ix.nodes.length;
+    for (let k = 0; k < count; k++) {
+      const i = positions ? positions[k] : k;
+      const n = ix.nodes[i];
       if (ks && !ks.has(n.kind)) continue;
       if (n.kind === 'directory' && q.length < 3) continue;
-      const name = n.name.toLowerCase();
-      const qn = (n.qname ?? '').toLowerCase();
+      const name = names[i];
       let score = 0;
       if (name === q) score = 100;
       else if (name.startsWith(q)) score = 80;
       else if (name.includes(q)) score = 60;
-      else if (qn.includes(q)) score = 40;
+      else if (qnames[i].includes(q)) score = 40;
       else if (fuzzy(q, name)) score = 20;
       if (score === 0) continue;
       score += Math.min(15, Math.log2(1 + (n.metrics?.fanIn ?? 0)) * 3);
@@ -416,7 +557,7 @@ export class QueryService {
       if (n.props.isTest) score -= 10;
       hits.push({ node: n, score });
     }
-    return hits.sort((a, b) => b.score - a.score).slice(0, limit);
+    return hits.sort((a, b) => b.score - a.score);
   }
 
   endpoints(includeTests = false): EndpointSummary[] {
@@ -524,6 +665,24 @@ export class QueryService {
   }
 }
 
+interface Indexed {
+  nodes: GraphNode[];
+  pos: Map<string, number>;
+  /** Containment parent index, -1 for none. */
+  parent: Int32Array;
+  /** A file's subsystem index (L0 roll-up), -1 for none. */
+  sub: Int32Array;
+  test: Uint8Array;
+  /** Relationship (non-structural) edges with endpoint and kind indices. */
+  edges: GraphEdge[];
+  src: Int32Array;
+  dst: Int32Array;
+  kind: Uint8Array;
+  kinds: EdgeKind[];
+  /** Lowercase names/qnames for search, built on first search. */
+  lower?: { name: string[]; qname: string[] };
+}
+
 /** Nodes within `depth` undirected hops of `start` over `edges`, plus their view-parent ancestors. */
 function focusSet(start: string, depth: number, edges: GraphEdge[], parentOf: Map<string, string>): Set<string> {
   const adj = new Map<string, string[]>();
@@ -576,8 +735,12 @@ function sortTree(a: GraphNode, b: GraphNode): number {
   return a.name.localeCompare(b.name);
 }
 
+/** `q`'s characters appear in `s` in order (native indexOf hops: this runs on every node in a scan). */
 function fuzzy(q: string, s: string): boolean {
-  let i = 0;
-  for (const ch of s) if (ch === q[i]) i++;
-  return i === q.length;
+  let at = 0;
+  for (let i = 0; i < q.length; i++) {
+    at = s.indexOf(q[i], at) + 1;
+    if (at === 0) return false;
+  }
+  return true;
 }

@@ -1,0 +1,1 @@
+{ "name": "polyglot-web", "version": "1.0.0", "dependencies": { "axios": "^1.7.0" }, "devDependencies": { "vitest": "^2.0.0" } }

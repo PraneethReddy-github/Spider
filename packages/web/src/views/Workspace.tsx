@@ -12,6 +12,7 @@ import { useShortcuts } from '../shortcuts';
 import { useStore } from '../store';
 import { EmptyState, Spinner } from '../ui';
 import { bindUrl } from '../urlState';
+import { DiffPanel } from './DiffPanel';
 import { FlowView } from './FlowView';
 import { FocusView } from './FocusView';
 import { MapView } from './MapView';
@@ -95,6 +96,7 @@ export function Workspace({ repoId }: { repoId: string }) {
             {view === 'externals' && <ExternalsView repoId={repoId} />}
             {view === 'issues' && <IssuesView repoId={repoId} />}
           </Suspense>
+          <DiffPanel repoId={repoId} />
           {pathMode && (
             <output className="overlay mode-banner">
               <span>Path {pathMode.direction === 'from' ? 'from' : 'to'} selection: click another node.</span>

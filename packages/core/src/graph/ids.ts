@@ -17,5 +17,7 @@ export const ids = {
   pkg: (manifestPath: string) => makeId('pkg', manifestPath),
   endpoint: (file: string, method: string, path: string, line: number) => makeId('ep', file, method, path, line),
   subsystem: (label: string) => makeId('sub', label),
+  /** `name` '' = the system's grouping node (database / queues). */
+  datastore: (system: string, name: string) => makeId('ds', system, name),
   edge: (kind: string, src: string, dst: string) => makeId('e', kind, src, dst),
 };

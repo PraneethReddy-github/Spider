@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import type { EdgeKind, NodeKind, RepoInfo, RepoStats } from '@spider/shared';
+import type { EdgeKind, NodeKind, ProjectionRequest, RepoInfo, RepoStats } from '@spider/shared';
 import { simpleGit } from 'simple-git';
 import { computeChurn } from './enrich/churn.js';
 import { type SubsystemGroup, enrich } from './enrich/index.js';
@@ -14,6 +14,7 @@ import { readOverrides } from './overrides.js';
 import { discover, emitStructure } from './pipeline/discover.js';
 import { extractAllWithStats } from './pipeline/extract.js';
 import { resolve } from './pipeline/resolve.js';
+import { QueryService, projectionKey } from './query/service.js';
 import { SqliteStore } from './store/sqlite.js';
 
 export interface ProgressEvent {
@@ -152,7 +153,9 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   };
   progress({ stage: 'persist', current: 0, total: 1 });
   const store = await SqliteStore.open(path.join(dir, 'graph.db'));
-  store.saveGraph(g, { info, diagnostics: en.diagnostics, subsystems: en.subsystemGroups });
+  const meta = { info, diagnostics: en.diagnostics, subsystems: en.subsystemGroups };
+  store.saveGraph(g, meta);
+  store.saveViews(new QueryService(g, meta).defaultViews());
   store.close();
   await fs.writeFile(path.join(dir, 'repo.json'), JSON.stringify(info, null, 2));
   info.durationMs = Date.now() - started;
@@ -265,9 +268,33 @@ export async function listRepos(home?: string): Promise<RepoInfo[]> {
 export async function loadRepo(repoId: string, home?: string) {
   const dir = repoDir(spiderHome(home), repoId);
   const store = await SqliteStore.open(path.join(dir, 'graph.db'));
-  const { graph, meta } = store.loadGraph();
-  store.close();
-  return { graph, meta, info: meta.info as RepoInfo };
+  try {
+    const { graph, meta } = await store.loadGraphAsync();
+    return { graph, meta, info: meta.info as RepoInfo };
+  } finally {
+    store.close();
+  }
+}
+
+/** The repo's FTS search index (an open store handle) for `new QueryService(graph, meta, index)`; close it with the service. */
+export async function openSearchIndex(repoId: string, home?: string): Promise<SqliteStore> {
+  return SqliteStore.open(path.join(repoDir(spiderHome(home), repoId), 'graph.db'));
+}
+
+/**
+ * A precomputed default projection as raw JSON, read without loading the graph (cold start of large
+ * repos: the map shows while the full graph loads); undefined when not stored.
+ */
+export async function storedView(repoId: string, req: ProjectionRequest, home?: string): Promise<string | undefined> {
+  if (!/^[\w-]+$/.test(repoId)) return undefined; // ids are hex; never let a URL segment walk the tree
+  const file = path.join(repoDir(spiderHome(home), repoId), 'graph.db');
+  if (!existsSync(file)) return undefined;
+  const store = await SqliteStore.open(file);
+  try {
+    return store.viewJson(projectionKey(req));
+  } finally {
+    store.close();
+  }
 }
 
 export async function deleteRepo(repoId: string, home?: string): Promise<void> {

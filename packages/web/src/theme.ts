@@ -301,6 +301,7 @@ export const LEGEND_NODE_KINDS: NodeKind[] = [
   'method',
   'endpoint',
   'external',
+  'datastore',
 ];
 export const LEGEND_EDGE_KINDS: EdgeKind[] = [
   'imports',
@@ -310,6 +311,8 @@ export const LEGEND_EDGE_KINDS: EdgeKind[] = [
   'implements',
   'exposes',
   'depends_on',
+  'reads',
+  'writes',
 ];
 
 /** Edge kinds offered in the filter panel, and the projection default. */
@@ -322,6 +325,8 @@ export const FILTER_EDGE_KINDS: EdgeKind[] = [
   'references',
   'exposes',
   'depends_on',
+  'reads',
+  'writes',
 ];
 export const DEFAULT_EDGE_KINDS: EdgeKind[] = [
   'imports',
@@ -342,4 +347,5 @@ export const FILTER_NODE_KINDS: NodeKind[] = [
   'type',
   'endpoint',
   'external',
+  'datastore',
 ];

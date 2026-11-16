@@ -1,5 +1,6 @@
 import type { SyntaxNode } from '../../parse/parser.js';
 import { field, stringValue } from '../../parse/parser.js';
+import { callArgs } from '../args.js';
 import {
   type DeclFact,
   type ExtractContext,
@@ -353,6 +354,7 @@ class Walker {
       callerQname: scope.qname,
       argCount: args?.namedChildCount ?? 0,
       span: spanOf(n, this.ctx.path),
+      ...callArgs(n),
     });
     // Flask: app.add_url_rule('/x', view_func=f); FastAPI: app.add_api_route('/x', f)
     const last = callee.split('.').pop();

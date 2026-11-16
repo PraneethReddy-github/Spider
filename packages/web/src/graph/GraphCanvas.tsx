@@ -200,6 +200,22 @@ export function GraphCanvas(p: GraphCanvasProps) {
     if (!sigma) return;
     const canvas = sigma.createCanvas('spider-regions', { beforeLayer: 'edges' });
     const ctx = canvas.getContext('2d');
+    const graph = sigma.getGraph();
+    // Member bounds in graph space only change when nodes move or the groups change, not with the
+    // camera: cache them and project two corners per region per frame (20k-node L3 views).
+    let boxes: GraphBox[] | undefined;
+    let boxesFor: Map<string, string[]> | undefined;
+    const dirty = () => {
+      boxes = undefined;
+    };
+    const events = [
+      'nodeAdded',
+      'nodeDropped',
+      'cleared',
+      'nodeAttributesUpdated',
+      'eachNodeAttributesUpdated',
+    ] as const;
+    for (const ev of events) graph.on(ev, dirty);
     const draw = () => {
       if (!ctx) return;
       const { width, height } = sigma.getDimensions();
@@ -212,16 +228,34 @@ export function GraphCanvas(p: GraphCanvasProps) {
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
-      const rects = regionRects(sigma, props.current.groups);
+      const groups = props.current.groups;
+      if (!boxes || boxesFor !== groups) {
+        boxes = graphBoxes(graph, groups);
+        boxesFor = groups;
+      }
       const theme = props.current.theme;
       const sel = props.current.selected;
-      for (const r of rects) {
+      ctx.fillStyle = graphPalette[theme].region;
+      ctx.strokeStyle = tokens[theme].hairlineStrong;
+      ctx.lineWidth = 1;
+      // one path per nesting depth (translucent fills still darken inward) instead of one per region
+      const rects = viewportRects(sigma, boxes, width, height);
+      let selRect: Rect | undefined;
+      for (let i = 0; i < rects.length; ) {
+        const depth = rects[i].depth;
         ctx.beginPath();
-        ctx.roundRect(r.x, r.y, r.w, r.h, 14);
-        ctx.fillStyle = graphPalette[theme].region;
+        for (; i < rects.length && rects[i].depth === depth; i++) {
+          const r = rects[i];
+          if (r.id === sel) selRect = r;
+          ctx.roundRect(r.x, r.y, r.w, r.h, 14);
+        }
         ctx.fill();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = r.id === sel ? tokens[theme].accent : tokens[theme].hairlineStrong;
+        ctx.stroke();
+      }
+      if (selRect) {
+        ctx.beginPath();
+        ctx.roundRect(selRect.x, selRect.y, selRect.w, selRect.h, 14);
+        ctx.strokeStyle = tokens[theme].accent;
         ctx.stroke();
       }
     };
@@ -229,9 +263,28 @@ export function GraphCanvas(p: GraphCanvasProps) {
     draw();
     return () => {
       sigma.off('afterRender', draw);
+      for (const ev of events) graph.off(ev, dirty);
       canvas.remove();
     };
   }, [sigma]);
+
+  /* ----- level of detail: big views drop edges and labels while the camera moves ----- */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-evaluated whenever a new projection is laid out
+  useEffect(() => {
+    if (!sigma) return;
+    const big = sigma.getGraph().order > LOD_NODES || sigma.getGraph().size > LOD_EDGES;
+    sigma.setSetting('hideEdgesOnMove', big);
+    sigma.setSetting('hideLabelsOnMove', big);
+    // node sizes are screen pixels: dense maps need a deeper zoom before neighbours separate
+    sigma.setSetting('minCameraRatio', big ? 0.002 : 0.02);
+    // Sigma picks the node under the pointer on every wheel/move event with a WebGL readPixels, which
+    // stalls on the GPU each time; on big maps skip picking while the camera is moving (hover is moot then).
+    // shortcut: overrides a private sigma 3 method on the instance; re-check on sigma upgrades.
+    const picker = sigma as unknown as { getNodeAtPosition: Picker };
+    const pick = (Object.getPrototypeOf(sigma) as { getNodeAtPosition: Picker }).getNodeAtPosition;
+    const moving = () => sigma.getCamera().isAnimated() || sigma.getMouseCaptor().isMoving;
+    picker.getNodeAtPosition = big ? (pos) => (moving() ? null : pick.call(sigma, pos)) : pick;
+  }, [sigma, p.layoutVersion, p.groups]);
 
   /* ----- reducers: selection / hover styling ----- */
   const { selected, secondary, hovered, theme, graph } = p;
@@ -365,6 +418,75 @@ function NodeTooltip({ graph, tip, host }: { graph: Graph; tip: Tip; host: HTMLD
 }
 
 /* ---------- region geometry ---------- */
+
+type Picker = (pos: { x: number; y: number }) => string | null;
+
+/** Above these counts the map is "big": edges and labels hide while panning/zooming. */
+const LOD_NODES = 5000;
+const LOD_EDGES = 20000;
+/** Regions smaller than this on screen (zoomed far out) are skipped: they'd be specks. */
+const MIN_REGION_PX = 6;
+
+interface GraphBox {
+  id: string;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  /** Largest member size (sigma px at ratio 1), for padding. */
+  size: number;
+  depth: number;
+}
+
+/** Bounding boxes of every visible group in raw graph coordinates, outermost first. */
+function graphBoxes(graph: Graph, groups: Map<string, string[]> | undefined): GraphBox[] {
+  if (!groups || groups.size === 0) return [];
+  const out: GraphBox[] = [];
+  for (const [id, members] of groups) {
+    if (!graph.hasNode(id) || graph.getNodeAttribute(id, 'hidden')) continue;
+    const box: GraphBox = {
+      id,
+      minX: Number.POSITIVE_INFINITY,
+      minY: Number.POSITIVE_INFINITY,
+      maxX: Number.NEGATIVE_INFINITY,
+      maxY: Number.NEGATIVE_INFINITY,
+      size: 0,
+      depth: Number(graph.getNodeAttribute(id, 'depth') ?? 0),
+    };
+    const add = (m: string) => {
+      if (!graph.hasNode(m)) return;
+      const a = graph.getNodeAttributes(m);
+      if (a.hidden) return;
+      box.minX = Math.min(box.minX, a.x);
+      box.maxX = Math.max(box.maxX, a.x);
+      box.minY = Math.min(box.minY, a.y);
+      box.maxY = Math.max(box.maxY, a.y);
+      box.size = Math.max(box.size, Number(a.size ?? 0));
+    };
+    add(id);
+    for (const m of members) add(m);
+    if (Number.isFinite(box.minX)) out.push(box);
+  }
+  return out.sort((a, b) => a.depth - b.depth);
+}
+
+/** Cached graph boxes → on-screen rectangles; off-screen and speck-sized regions are dropped. */
+function viewportRects(sigma: Sigma, boxes: GraphBox[], width: number, height: number): Rect[] {
+  const out: Rect[] = [];
+  for (const b of boxes) {
+    const p = sigma.graphToViewport({ x: b.minX, y: b.minY });
+    const q = sigma.graphToViewport({ x: b.maxX, y: b.maxY });
+    const pad = sigma.scaleSize(b.size) + 12;
+    const x = Math.min(p.x, q.x) - pad;
+    const y = Math.min(p.y, q.y) - pad;
+    const w = Math.abs(q.x - p.x) + 2 * pad;
+    const h = Math.abs(q.y - p.y) + 2 * pad;
+    if (x > width || y > height || x + w < 0 || y + h < 0) continue;
+    if (w - 24 < MIN_REGION_PX && h - 24 < MIN_REGION_PX && boxes.length > 200) continue;
+    out.push({ id: b.id, x, y, w, h, depth: b.depth });
+  }
+  return out;
+}
 
 interface Rect {
   id: string;

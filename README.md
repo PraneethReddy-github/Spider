@@ -63,11 +63,27 @@ spider list
 spider stats <repo>
 spider query <repo> search|upstream|downstream|path|endpoints|diagnostics|subsystems …
 spider export <repo> --format json|dot|graphml [-o file]
+spider diff [repo|path] --base main [--head HEAD] [--format md|json] [-o file]
 spider serve [-p 4747] [--host 127.0.0.1]
 spider open
 ```
 
 `--home <dir>` works with every command.
+
+### Graph diff and PR mode
+
+`spider diff --base main` analyses `main` (from `git archive`, never touching your working tree) and
+the working tree, and prints a Markdown summary of added/removed files, symbols and dependencies plus
+new cycles and layer violations — ready for a PR comment (`--format json` for the full diff). In the web
+app, **More ▾ → Compare with a revision…** draws the same diff on the map: added nodes and edges carry
+green marks, removed ones come back faded with red marks. See
+[`docs/examples/spider-diff.yml`](docs/examples/spider-diff.yml) for a GitHub workflow.
+
+### VS Code
+
+`packages/vscode` hosts the web app in a VS Code webview: **Spider: Open map**, **Spider: Reveal in
+Spider** (symbol under the cursor) and "Open in editor" from the map back into VS Code. See its
+[README](packages/vscode/README.md).
 
 ## Development
 
@@ -87,6 +103,7 @@ packages/core     discover → parse → extract → resolve → enrich → pers
 packages/server   Fastify HTTP API (+ WebSocket job progress) and static web hosting
 packages/cli      the spider command
 packages/web      React + Sigma web app
+packages/vscode   VS Code extension (webview of the web app)
 fixtures/         small repos with hand-verified expected graphs
 ```
 

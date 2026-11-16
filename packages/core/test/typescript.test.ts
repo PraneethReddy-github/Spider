@@ -39,8 +39,9 @@ describe('typescript / express fixture', async () => {
     expect(edges).toContain(
       'calls src/routes/users.ts::registerUserRoutes.GET /users -> src/services/userService.ts::UserService.list',
     );
-    // module-level binding: orders.get(...)
-    expect(edges).toContain('calls src/index.ts -> src/routes/orders.ts::OrderController.get');
+    // module-level binding: orders.get(...) inside an inline handler (attributed to the handler only, once)
+    expect(edges).toContain('calls src/index.ts::GET /orders/:id -> src/routes/orders.ts::OrderController.get');
+    expect(edges).not.toContain('calls src/index.ts -> src/routes/orders.ts::OrderController.get');
     // must not bind app.get(...) to OrderController.get by name
     expect(edges).not.toContain(
       'calls src/routes/users.ts::registerUserRoutes -> src/routes/orders.ts::OrderController.get',

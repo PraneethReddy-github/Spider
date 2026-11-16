@@ -59,7 +59,14 @@ export interface CallFact {
   isNew?: boolean;
   argCount: number;
   span: Span;
+  /** Literal arguments by position (first 4, see `args.ts`); set only when one is literal. */
+  args?: (CallArg | null)[];
+  /** String-valued keyword arguments / object-literal properties (`method='POST'`, `{ baseURL: '/api' }`). */
+  kw?: Record<string, string>;
 }
+
+/** `s`: string literal (interpolations → `{}`); `r`: type-like reference (`User`, `&User{}`, `User.class`). */
+export type CallArg = { s: string; r?: undefined } | { r: string; s?: undefined };
 
 export interface EndpointFact {
   method: string; // GET, POST, ..., ANY, WS

@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { QueryService, analyze, listRepos, loadRepo, markdownReport, repoIdFor, toDot, toGraphML } from '@spider/core';
+import {
+  QueryService,
+  analyze,
+  diffMarkdown,
+  diffRevisions,
+  listRepos,
+  loadRepo,
+  markdownReport,
+  readOverrides,
+  repoIdFor,
+  toDot,
+  toGraphML,
+} from '@spider/core';
 import type { ProgressEvent } from '@spider/core';
 import { startServer } from '@spider/server';
 import { Command } from 'commander';
@@ -260,6 +272,42 @@ program
       default:
         console.error(pc.red(`✖ Unknown query kind ${kind}.`));
     }
+  });
+
+program
+  .command('diff')
+  .argument('[repo]', 'local path, or id/name of an analysed local repo', '.')
+  .requiredOption('-b, --base <ref>', 'base revision, e.g. main')
+  .option('--head <ref>', 'head revision (default: the working tree)')
+  .option('-f, --format <format>', 'md | json', 'md')
+  .option('-o, --out <file>', 'write to a file instead of stdout')
+  .description('Diff the graph of two revisions (Markdown summary for a PR comment)')
+  .action(async (repo: string, opts: { base: string; head?: string; format: string; out?: string }) => {
+    if (opts.format !== 'md' && opts.format !== 'json') {
+      console.error(pc.red(`✖ Unknown format ${opts.format}. Use md or json.`));
+      process.exit(1);
+    }
+    const isDir = await fs
+      .stat(repo)
+      .then((s) => s.isDirectory())
+      .catch(() => false);
+    const info = isDir ? undefined : await resolveRepo(repo);
+    const d = await diffRevisions({
+      root: info?.root ?? repo,
+      base: opts.base,
+      head: opts.head,
+      home: home(),
+      overrides: info ? await readOverrides(info.repoId, home()) : undefined,
+    }).catch((err: Error) => {
+      console.error(pc.red(`✖ ${err.message}`));
+      process.exit(1);
+    });
+    const text = opts.format === 'json' ? `${JSON.stringify(d, null, 2)}\n` : diffMarkdown(d);
+    if (!opts.out) return void process.stdout.write(text);
+    await fs.writeFile(opts.out, text);
+    const s = d.summary;
+    const stats = pc.dim(`  +${num(s.edgesAdded)} −${num(s.edgesRemoved)} edges, ${count(s.newCycles, 'new cycle')}`);
+    console.log(`${pc.green('✔')} Wrote the diff ${opts.base} → ${opts.head ?? 'working tree'} to ${opts.out}${stats}`);
   });
 
 async function resolveRepo(ref: string) {

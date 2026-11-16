@@ -52,7 +52,7 @@ export function enrich(g: GraphBuilder, d: Discovery, opts: EnrichOptions = {}):
 }
 
 function markEntryPoints(g: GraphBuilder, d: Discovery): void {
-  const entryNames = /^(index|main|app|server|cli|__main__|manage|wsgi|asgi)\.(m?[jt]sx?|py)$/;
+  const entryNames = /^(index|main|app|server|cli|__main__|manage|wsgi|asgi)\.(m?[jt]sx?|py|go|rs)$/;
   for (const f of g.nodesOfKind('file')) {
     const p = f.file ?? '';
     const depth = p.split('/').length;
@@ -109,6 +109,7 @@ function buildFileGraph(g: GraphBuilder): Graph {
   };
   for (const e of g.edges.values()) {
     if (!['imports', 'calls', 'instantiates', 'extends', 'implements', 'exposes'].includes(e.kind)) continue;
+    if (e.props.protocol === 'http') continue; // a service boundary, not a code dependency
     const a = fileOf(e.src);
     const b = fileOf(e.dst);
     if (!a || !b || a === b || !fg.hasNode(a) || !fg.hasNode(b)) continue;
@@ -150,27 +151,41 @@ function findCycles(g: GraphBuilder, fg: Graph): Diagnostic[] {
   const onStack = new Set<string>();
   const stack: string[] = [];
   const sccs: string[][] = [];
-  const strong = (v: string) => {
-    idx.set(v, index);
-    low.set(v, index);
-    index++;
-    stack.push(v);
-    onStack.add(v);
-    for (const w of adj.get(v) ?? []) {
-      if (!idx.has(w)) {
-        strong(w);
-        low.set(v, Math.min(low.get(v)!, low.get(w)!));
-      } else if (onStack.has(w)) low.set(v, Math.min(low.get(v)!, idx.get(w)!));
-    }
-    if (low.get(v) === idx.get(v)) {
-      const comp: string[] = [];
-      let w: string;
-      do {
-        w = stack.pop()!;
-        onStack.delete(w);
-        comp.push(w);
-      } while (w !== v);
-      if (comp.length > 1) sccs.push(comp);
+  // iterative (explicit call frames): recursion overflowed the stack on ~28k-file import chains
+  const strong = (root: string) => {
+    const frames: [string, number][] = [];
+    const enter = (v: string) => {
+      idx.set(v, index);
+      low.set(v, index);
+      index++;
+      stack.push(v);
+      onStack.add(v);
+      frames.push([v, 0]);
+    };
+    enter(root);
+    while (frames.length) {
+      const top = frames[frames.length - 1];
+      const v = top[0];
+      const out = adj.get(v) ?? [];
+      if (top[1] < out.length) {
+        const w = out[top[1]++];
+        if (!idx.has(w)) enter(w);
+        else if (onStack.has(w)) low.set(v, Math.min(low.get(v)!, idx.get(w)!));
+        continue;
+      }
+      frames.pop();
+      const parent = frames[frames.length - 1];
+      if (parent) low.set(parent[0], Math.min(low.get(parent[0])!, low.get(v)!));
+      if (low.get(v) === idx.get(v)) {
+        const comp: string[] = [];
+        let w: string;
+        do {
+          w = stack.pop()!;
+          onStack.delete(w);
+          comp.push(w);
+        } while (w !== v);
+        if (comp.length > 1) sccs.push(comp);
+      }
     }
   };
   for (const v of fg.nodes()) if (!idx.has(v) && adj.has(v)) strong(v);
