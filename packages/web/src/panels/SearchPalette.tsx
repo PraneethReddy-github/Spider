@@ -24,6 +24,7 @@ export function SearchPalette({ repoId }: { repoId: string }) {
   const [text, setText] = useState('');
   const [debounced, setDebounced] = useState('');
   const [filter, setFilter] = useState(0);
+  const [mode, setMode] = useState<'name' | 'semantic'>('name');
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebounced(text.trim()), 120);
@@ -35,8 +36,8 @@ export function SearchPalette({ repoId }: { repoId: string }) {
 
   const kinds = FILTERS[filter].kinds;
   const results = useQuery({
-    queryKey: ['search', repoId, debounced, kinds?.join(',') ?? '*'],
-    queryFn: () => api.search(repoId, debounced, kinds, 30),
+    queryKey: ['search', repoId, debounced, kinds?.join(',') ?? '*', mode],
+    queryFn: () => api.search(repoId, debounced, kinds, 30, mode),
     enabled: open && debounced.length > 0,
     placeholderData: keepPreviousData,
   });
@@ -64,12 +65,27 @@ export function SearchPalette({ repoId }: { repoId: string }) {
               {f.label}
             </button>
           ))}
+          <span className="palette-chips-sep" />
+          <button
+            type="button"
+            aria-pressed={mode === 'semantic'}
+            title="Match by meaning: docstrings, signatures and summaries, not only names (local, no network)"
+            onClick={() => setMode(mode === 'semantic' ? 'name' : 'semantic')}
+          >
+            By meaning
+          </button>
         </div>
         <Command.List>
           {debounced && !results.isFetching && hits.length === 0 && (
             <Command.Empty>No matches for “{debounced}”.</Command.Empty>
           )}
-          {!debounced && <div className="empty tone-2">Type a name. Exact and prefix matches rank first.</div>}
+          {!debounced && (
+            <div className="empty tone-2">
+              {mode === 'semantic'
+                ? 'Describe what you are looking for, e.g. “where are passwords hashed”.'
+                : 'Type a name. Exact and prefix matches rank first.'}
+            </div>
+          )}
           {hits.map((h) => (
             <Command.Item key={h.node.id} value={h.node.id} onSelect={pick}>
               <KindBadge kind={h.node.kind} />

@@ -51,6 +51,8 @@ export const searchQuerySchema = z.object({
   q: z.string().default(''),
   kinds: csv(nodeKind),
   limit: int(1, MAX_LIMIT).default(25),
+  /** `name` (default): exact/prefix/substring/fuzzy on names. `semantic`: BM25 + names (+ embeddings), C-26. */
+  mode: z.enum(['name', 'semantic']).default('name'),
 });
 
 export const pathQuerySchema = z.object({

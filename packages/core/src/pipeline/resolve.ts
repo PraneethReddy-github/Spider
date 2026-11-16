@@ -465,6 +465,7 @@ export function resolve(g: GraphBuilder, d: Discovery, all: Map<string, FileFact
           visibility: decl.visibility,
           classKind: decl.classKind,
           signature: decl.signature,
+          docstring: decl.docstring,
           params: decl.params,
           decorators: decl.decorators,
           isTest: g.getNode(fileId)?.props.isTest ?? false,

@@ -39,7 +39,7 @@ describe('C-23 provider config', () => {
   it('reads config.json and lets env override it', () => {
     Reflect.deleteProperty(process.env, 'SPIDER_LLM_PROVIDER');
     writeFileSync(path.join(home, 'config.json'), JSON.stringify({ llm: { provider: 'ollama', model: 'qwen3' } }));
-    expect(llmConfig(home)).toEqual({ provider: 'ollama', model: 'qwen3', baseUrl: undefined });
+    expect(llmConfig(home)).toEqual({ provider: 'ollama', model: 'qwen3', baseUrl: undefined, embedModel: undefined });
     process.env.SPIDER_LLM_MODEL = 'llama4';
     expect(llmConfig(home)?.model).toBe('llama4');
     expect(createProvider(llmConfig(home))?.name).toBe('openai');

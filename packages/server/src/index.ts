@@ -295,6 +295,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   app.get<RepoReq>('/api/v1/repos/:id/search', async (req, reply) => {
     const p = valid(searchQuerySchema, req.query, reply);
     if (!p) return reply;
+    if (p.mode === 'semantic') return semanticSearch(req.params.id, p);
     return withService(req.params.id, (q) => q.search(p.q, p.kinds, p.limit));
   });
 
@@ -348,7 +349,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
 
   registerDiffRoutes(app, { home, repoInfo: async (id) => (await getService(id, home)).info });
 
-  registerSemanticRoutes(app, { home, withService });
+  const semanticSearch = registerSemanticRoutes(app, { home, withService });
 
   registerArchitectureRoutes(app, {
     home,

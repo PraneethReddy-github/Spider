@@ -48,6 +48,9 @@ export interface LlmProvider {
   readonly name: 'anthropic' | 'openai';
   readonly model: string;
   chat(req: ChatRequest): Promise<ChatResponse>;
+  /** Embedding model id, when one is configured (C-26); `embed` exists only then. */
+  readonly embedModel?: string;
+  embed?(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 }
 
 /** Text of a response (all text blocks joined). */

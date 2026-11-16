@@ -39,7 +39,7 @@ lines into `JobProgress.log` and `message`, one per stage and 10 % step (e.g. `r
 | `GET /repos/:id/graph` | `level=L0|L1|L2|L3` (default L1), `expanded=id,id`, `edgeKinds=`, `nodeKinds=`, `languages=`, `includeTests=true`, `minConfidence=0..1`, `minWeight=n`, `focus=<nodeId>`, `focusDepth=0..6` (default 1) | `Projection` — projected nodes carry `props.childCount`, `props.viewParent`; edges are aggregated (`id = kind|src|dst`, `weight`, `props.leafCount`, `props.ambiguous`, `props.direct`); `meta: ProjectionMeta { level, total, truncated, truncatedReason?, focus?, stats: { nodes, edges, byKind } }`. With `focus`, only nodes within `focusDepth` undirected hops of the focus node's visible representative (`meta.focus`) over the projected edges are kept, plus the view-parent groups containing them; unknown `focus` → 404. Over 6 000 nodes the result is cut and `meta.truncatedReason` says so. |
 | `GET /repos/:id/nodes/:nodeId` | — | `NodeDetail` `{ node, parents (nearest first), incoming[{edge,node}], outgoing[{edge,node}], children }` |
 | `GET /repos/:id/nodes/:nodeId/source` | `context=5` | `{ path, language, startLine, endLine, highlight: [s, e], lines: string[], totalLines }` |
-| `GET /repos/:id/search` | `q=`, `kinds=`, `limit=25` | `SearchHit[]` `{ node, score }` |
+| `GET /repos/:id/search` | `q=`, `kinds=`, `limit=25`, `mode=name\|semantic` (default `name`) | `SearchHit[]` `{ node, score }`. `semantic` (C-26): BM25 over names, qualified-name parts, signatures, docstrings and summaries, blended with the name match (0.6 / 0.4, scores 0–100); with embeddings built by `spider embed` for the configured embedding model, the query is embedded and cosine similarity joins at 0.4. Local unless embeddings exist |
 | `GET /repos/:id/upstream/:nodeId` | `depth=3`, `kinds=` | `SubGraph & { distances: Record<id, number> }` (root = 0) |
 | `GET /repos/:id/downstream/:nodeId` | `depth=3`, `kinds=` | same |
 | `GET /repos/:id/neighbors/:nodeId` | `depth=1`, `kinds=` | same (both directions) |
@@ -139,6 +139,7 @@ the file.
 | `SPIDER_LLM_PROVIDER` | `anthropic` (Claude, default model `claude-opus-5-5`), `openai` (any OpenAI-compatible `/chat/completions`, default base `https://api.openai.com/v1`), `ollama` (base `http://127.0.0.1:11434/v1`), `none` |
 | `SPIDER_LLM_MODEL` | model id (required for `openai`/`ollama`) |
 | `SPIDER_LLM_BASE_URL` | endpoint override |
+| `SPIDER_EMBED_MODEL` | embedding model for semantic search (`openai`/`ollama` only; Anthropic has no embeddings endpoint) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | credentials (Anthropic also accepts `ANTHROPIC_AUTH_TOKEN` or an `ant auth login` profile) |
 
 | Route | Body / query | Response |
@@ -164,5 +165,5 @@ response is `text/event-stream`, one JSON object per `data:` line:
 
 Closing the connection aborts the model loop. 400 on a bad body, 409 when no provider is configured.
 
-CLI: `spider summarize <repo> [--limit 40] [--node <ids...>] [--force]`. Summaries live in
+CLI: `spider summarize <repo> [--limit 40] [--node <ids...>] [--force]`. `spider embed <repo> [--max 20000]` embeds the most-central production nodes (vectors reused while their text is unchanged; `repos/<id>/embeddings.{json,bin}`). Summaries live in
 `SPIDER_HOME/repos/<id>/summaries.json`.

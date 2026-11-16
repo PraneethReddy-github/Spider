@@ -1,13 +1,27 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import {
   type AskEvent,
+  type EmbeddingStore,
   type QueryService,
   ask,
   configuredProvider,
   generateSummaries,
   llmConfig,
+  loadEmbeddings,
+  nearest,
   readSummaries,
+  repoDir,
+  spiderHome,
 } from '@spider/core';
-import { type LlmStatus, type RepoInfo, askBodySchema, parseQuery, summarizeBodySchema } from '@spider/shared';
+import {
+  type LlmStatus,
+  type RepoInfo,
+  type SearchHit,
+  askBodySchema,
+  parseQuery,
+  summarizeBodySchema,
+} from '@spider/shared';
 import type { FastifyInstance } from 'fastify';
 
 export interface SemanticDeps {
@@ -17,9 +31,28 @@ export interface SemanticDeps {
 
 type RepoReq = { Params: { id: string } };
 
-/** Phase 5 routes: provider status, summaries (C-23). Model calls happen only when a provider is configured. */
-export function registerSemanticRoutes(app: FastifyInstance, deps: SemanticDeps): void {
+/**
+ * Phase 5 routes: provider status, summaries (C-23), ask (C-24). Model calls happen only when a provider is
+ * configured. Returns the semantic search used by `GET /search?mode=semantic` (C-26).
+ */
+export function registerSemanticRoutes(
+  app: FastifyInstance,
+  deps: SemanticDeps,
+): (repoId: string, p: { q: string; kinds?: string[]; limit: number }) => Promise<SearchHit[]> {
   const { home, withService } = deps;
+  /** Loaded embedding stores by repo, reloaded when the file changes. */
+  const stores = new Map<string, { mtimeMs: number; store?: EmbeddingStore }>();
+  const embeddings = async (info: RepoInfo) => {
+    const stat = await fs
+      .stat(path.join(repoDir(spiderHome(home), info.repoId), 'embeddings.bin'))
+      .catch(() => undefined);
+    if (!stat) return undefined;
+    const hit = stores.get(info.repoId);
+    if (hit?.mtimeMs === stat.mtimeMs) return hit.store;
+    const store = await loadEmbeddings(info.repoId, home);
+    stores.set(info.repoId, { mtimeMs: stat.mtimeMs, store });
+    return store;
+  };
 
   app.get('/api/v1/llm', async (): Promise<LlmStatus> => {
     const cfg = llmConfig(home);
@@ -83,4 +116,21 @@ export function registerSemanticRoutes(app: FastifyInstance, deps: SemanticDeps)
       }
     });
   });
+
+  return (repoId, p) =>
+    withService(repoId, async (q, info) => {
+      const summaries = await readSummaries(info.repoId, home);
+      let cosine: Map<string, number> | undefined;
+      const provider = configuredProvider(home);
+      const store = provider?.embed ? await embeddings(info) : undefined;
+      // the query is embedded only when this repo has vectors from the same model
+      if (provider?.embed && store && store.model === provider.embedModel) {
+        try {
+          cosine = nearest(store, (await provider.embed([p.q]))[0]);
+        } catch {
+          // embedding endpoint down: fall back to local ranking
+        }
+      }
+      return q.semantic(p.q, { kinds: p.kinds, limit: p.limit, summaries, cosine });
+    });
 }

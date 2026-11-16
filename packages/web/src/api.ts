@@ -122,8 +122,8 @@ export const api = {
   node: (id: string, nodeId: string) => request<NodeDetail>(`/repos/${enc(id)}/nodes/${enc(nodeId)}`),
   source: (id: string, nodeId: string, context = 5) =>
     request<SourceSnippet>(`/repos/${enc(id)}/nodes/${enc(nodeId)}/source${qs({ context })}`),
-  search: (id: string, q: string, kinds?: string[], limit = 25) =>
-    request<SearchHit[]>(`/repos/${enc(id)}/search${qs({ q, kinds, limit })}`),
+  search: (id: string, q: string, kinds?: string[], limit = 25, mode?: 'name' | 'semantic') =>
+    request<SearchHit[]>(`/repos/${enc(id)}/search${qs({ q, kinds, limit, mode })}`),
   upstream: (id: string, nodeId: string, depth = 3, kinds?: string[]) =>
     request<SubGraphWithDistances>(`/repos/${enc(id)}/upstream/${enc(nodeId)}${qs({ depth, kinds })}`),
   downstream: (id: string, nodeId: string, depth = 3, kinds?: string[]) =>

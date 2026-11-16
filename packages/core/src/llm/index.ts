@@ -9,3 +9,5 @@ export { GRAPH_TOOLS, runGraphTool } from './tools.js';
 export type { ToolContext, ToolOutput } from './tools.js';
 export { ask } from './ask.js';
 export type { AskEvent, AskOptions, AskTurn } from './ask.js';
+export { buildEmbeddings, loadEmbeddings, nearest } from './embeddings.js';
+export type { EmbedOptions, EmbeddingStore } from './embeddings.js';

@@ -21,7 +21,27 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     readonly model: string,
     private readonly baseUrl: string,
     private readonly apiKey = process.env.OPENAI_API_KEY,
-  ) {}
+    readonly embedModel?: string,
+  ) {
+    if (!embedModel) this.embed = undefined;
+  }
+
+  private headers() {
+    return { 'content-type': 'application/json', ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) };
+  }
+
+  /** `/embeddings` (OpenAI, Ollama `/v1`, vLLM…), vectors in input order. */
+  embed? = async (texts: string[], signal?: AbortSignal): Promise<number[][]> => {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/embeddings`, {
+      method: 'POST',
+      signal,
+      headers: this.headers(),
+      body: JSON.stringify({ model: this.embedModel, input: texts }),
+    });
+    if (!res.ok) throw new Error(`${this.baseUrl}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
+    const data = (await res.json()) as { data: { index: number; embedding: number[] }[] };
+    return [...data.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
+  };
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const messages: OaMessage[] = [{ role: 'system', content: req.system }];
@@ -43,10 +63,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       signal: req.signal,
-      headers: {
-        'content-type': 'application/json',
-        ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
-      },
+      headers: this.headers(),
       body: JSON.stringify({
         model: this.model,
         max_tokens: req.maxTokens ?? 4096,

@@ -10,6 +10,8 @@ export interface LlmConfig {
   provider: 'anthropic' | 'openai' | 'ollama';
   model?: string;
   baseUrl?: string;
+  /** Embedding model for semantic search (OpenAI-compatible providers only). */
+  embedModel?: string;
 }
 
 const PROVIDERS = new Set(['anthropic', 'openai', 'ollama']);
@@ -34,6 +36,7 @@ export function llmConfig(home?: string): LlmConfig | undefined {
     provider: provider as LlmConfig['provider'],
     model: process.env.SPIDER_LLM_MODEL ?? file.model,
     baseUrl: process.env.SPIDER_LLM_BASE_URL ?? file.baseUrl,
+    embedModel: process.env.SPIDER_EMBED_MODEL ?? file.embedModel,
   };
 }
 
@@ -42,8 +45,8 @@ export function createProvider(cfg: LlmConfig | undefined): LlmProvider | undefi
   if (cfg.provider === 'anthropic')
     return new AnthropicProvider(cfg.model ?? DEFAULT_ANTHROPIC_MODEL, { baseURL: cfg.baseUrl });
   if (!cfg.model) throw new Error(`SPIDER_LLM_MODEL is required for the ${cfg.provider} provider`);
-  if (cfg.provider === 'ollama') return new OpenAiCompatibleProvider(cfg.model, cfg.baseUrl ?? OLLAMA_BASE_URL);
-  return new OpenAiCompatibleProvider(cfg.model, cfg.baseUrl ?? 'https://api.openai.com/v1');
+  const base = cfg.baseUrl ?? (cfg.provider === 'ollama' ? OLLAMA_BASE_URL : 'https://api.openai.com/v1');
+  return new OpenAiCompatibleProvider(cfg.model, base, process.env.OPENAI_API_KEY, cfg.embedModel);
 }
 
 /** `createProvider(llmConfig(home))`. */

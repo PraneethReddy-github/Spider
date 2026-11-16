@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import {
   QueryService,
   analyze,
+  buildEmbeddings,
   configuredProvider,
   diffMarkdown,
   diffRevisions,
@@ -12,6 +13,7 @@ import {
   loadRepo,
   markdownReport,
   readOverrides,
+  readSummaries,
   repoIdFor,
   serveMcpStdio,
   toDot,
@@ -250,6 +252,37 @@ program
     console.log(`${pc.green('✔')} ${r.generated} written, ${r.reused} unchanged, ${r.failed.length} failed`);
     for (const f of r.failed) console.log(pc.red(`  ${graph.getNode(f.nodeId)?.qname ?? f.nodeId}: ${f.error}`));
     if (r.failed.length) process.exitCode = 1;
+  });
+
+program
+  .command('embed')
+  .argument('<repo>', 'repo id, name or source path')
+  .option('-m, --max <n>', 'most-central nodes to embed', '20000')
+  .description('Embed nodes for semantic search (needs an openai/ollama provider and SPIDER_EMBED_MODEL)')
+  .action(async (repo: string, opts: { max: string }) => {
+    const provider = configuredProvider(home());
+    if (!provider?.embed) {
+      console.error(
+        pc.red('No embedding model configured.'),
+        'Set SPIDER_LLM_PROVIDER=openai|ollama and SPIDER_EMBED_MODEL.',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const info = await resolveRepo(repo);
+    const { graph } = await loadRepo(info.repoId, home());
+    const r = await buildEmbeddings({
+      repoId: info.repoId,
+      g: graph,
+      provider,
+      home: home(),
+      summaries: await readSummaries(info.repoId, home()),
+      max: Number(opts.max),
+      onProgress: (done, total) => process.stderr.write(pc.dim(`  ${done}/${total}\r`)),
+    });
+    console.log(
+      `${pc.green('✔')} ${r.embedded} embedded, ${r.reused} unchanged (${r.total} nodes, ${provider.embedModel})`,
+    );
   });
 
 program

@@ -10,7 +10,7 @@ import { PARSEABLE_LANGUAGES } from '../parse/parser.js';
 import type { DiscoveredFile } from './discover.js';
 import { type ExtractJob, errorFacts, extractFile } from './extract-file.js';
 
-export const EXTRACTOR_VERSION = 10;
+export const EXTRACTOR_VERSION = 11;
 
 /** Built worker entry; absent when running from TypeScript sources (vitest), which forces in-process extraction. */
 const WORKER_URL = new URL('./extract-worker.js', import.meta.url);

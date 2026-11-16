@@ -1071,6 +1071,9 @@ a:hover {
   border-top: 1px solid var(--hairline);
   border-bottom: 1px solid var(--hairline);
 }
+.palette-chips-sep {
+  flex: 1;
+}
 .palette-chips button {
   height: 24px;
   padding: 0 8px;

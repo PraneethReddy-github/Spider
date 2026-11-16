@@ -13,6 +13,7 @@ import type {
 } from '@spider/shared';
 import type { GraphBuilder } from '../graph/builder.js';
 import { type MatrixRequest, externals, matrix } from './architecture.js';
+import { type Bm25Index, buildBm25, hybridRank } from './semantic.js';
 
 const STRUCTURAL: Set<EdgeKind> = new Set(['contains', 'member_of', 'exports']);
 const DEFAULT_EDGE_KINDS: EdgeKind[] = [
@@ -527,6 +528,35 @@ export class QueryService {
       if (hits.filter((h) => h.score > 40).length >= limit) return hits.slice(0, limit);
     }
     return this.scoreAll(q, ks).slice(0, limit);
+  }
+
+  private bm25?: { key: string; ix: Bm25Index };
+
+  /**
+   * Semantic search (C-26): BM25 over names, qname parts, signatures, docstrings and `summaries`, blended with
+   * the name search and, when given, embedding similarity (`cosine`). Local unless the caller embedded the query.
+   */
+  semantic(
+    query: string,
+    opts: {
+      kinds?: string[];
+      limit?: number;
+      summaries?: Record<string, { text: string; generatedAt?: string }>;
+      cosine?: Map<string, number>;
+    } = {},
+  ): SearchHit[] {
+    if (!query.trim()) return [];
+    const sums = opts.summaries ?? {};
+    const key = `${Object.keys(sums).length}:${Object.values(sums).reduce((m, x) => (x.generatedAt && x.generatedAt > m ? x.generatedAt : m), '')}`;
+    if (this.bm25?.key !== key) this.bm25 = { key, ix: buildBm25(this.g.nodes.values(), sums) };
+    return hybridRank({
+      bm25: this.bm25.ix.search(query, 200),
+      names: this.search(query, opts.kinds, 50),
+      cosine: opts.cosine,
+      node: (id) => this.g.getNode(id),
+      kinds: opts.kinds,
+      limit: opts.limit ?? 25,
+    });
   }
 
   /** Scores the nodes at `positions` (default: every node, in insertion order). */
