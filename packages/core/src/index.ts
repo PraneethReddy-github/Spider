@@ -33,3 +33,5 @@ export {
 } from './diff/index.js';
 export type { BuiltGraph, DiffOptions } from './diff/index.js';
 export * from './llm/index.js';
+export { createMcpHandler, serveMcpStdio } from './mcp.js';
+export type { McpOptions } from './mcp.js';

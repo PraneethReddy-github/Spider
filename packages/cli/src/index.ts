@@ -13,6 +13,7 @@ import {
   markdownReport,
   readOverrides,
   repoIdFor,
+  serveMcpStdio,
   toDot,
   toGraphML,
 } from '@spider/core';
@@ -249,6 +250,14 @@ program
     console.log(`${pc.green('✔')} ${r.generated} written, ${r.reused} unchanged, ${r.failed.length} failed`);
     for (const f of r.failed) console.log(pc.red(`  ${graph.getNode(f.nodeId)?.qname ?? f.nodeId}: ${f.error}`));
     if (r.failed.length) process.exitCode = 1;
+  });
+
+program
+  .command('mcp')
+  .argument('[repo]', 'repo id or name every tool uses by default (otherwise tools take a `repo` argument)')
+  .description('Serve the graph tools to an MCP client over stdio (read-only, no model calls)')
+  .action(async (repo?: string) => {
+    await serveMcpStdio({ home: home(), repo, version: program.version() });
   });
 
 program

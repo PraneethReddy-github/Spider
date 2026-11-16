@@ -112,6 +112,7 @@ fixtures/         small repos with hand-verified expected graphs
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — current state, invariants and the ordered
   roadmap.
 - [`docs/API.md`](docs/API.md) — HTTP API reference.
+- [`docs/MCP.md`](docs/MCP.md) — `spider mcp`: the graph tools for MCP clients (Claude Code, Claude Desktop, Cursor).
 
 ## Roadmap
 
