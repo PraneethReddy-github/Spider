@@ -11,3 +11,4 @@ export { ask } from './ask.js';
 export type { AskEvent, AskOptions, AskTurn } from './ask.js';
 export { buildEmbeddings, loadEmbeddings, nearest } from './embeddings.js';
 export type { EmbedOptions, EmbeddingStore } from './embeddings.js';
+export { onboardingDoc, writeNarrative } from './onboarding.js';

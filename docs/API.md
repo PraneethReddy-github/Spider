@@ -148,6 +148,16 @@ the file.
 | `GET /repos/:id/summaries` | — | `Record<nodeId, NodeSummary>` `{ nodeId, text, hash, model, generatedAt }` (empty when none) |
 | `POST /repos/:id/summaries` | `{ nodeIds?: string[], limit?: number, force?: boolean }` | `{ generated, reused, failed: {nodeId, error}[], summaries }`. Default targets: every subsystem and package plus `limit` (40) hub files (PageRank) and classes (fan-in), tests excluded. Leaves first, then groups, whose prompt lists their members' summaries. A summary is reused while the hash of its input (prompt version, model, source excerpt, neighbours) is unchanged; `force` regenerates. 409 when no provider is configured. Runs synchronously. |
 
+### Onboarding and tours (C-27)
+
+| Route | Body / query | Response |
+|-------|--------------|----------|
+| `GET /repos/:id/tours/default` | — | `Tour` `{ id: 'default', title, steps: { title, text, nodeId?, level }[] }`: overview → up to 6 subsystems (most central file) → 3 hub files (PageRank) → endpoints → cycles/layer violations. Deterministic; steps are narrated by summaries when they exist, by graph facts otherwise. The web app plays it from More ▾ → Take the tour and shares it as `?tour=default&step=<n>` |
+| `GET /repos/:id/onboarding` | — | `text/markdown` "Architecture of X": the report, with the model-written narrative under the title when it still matches the current report and summaries. Header `x-spider-narrative: current \| stale \| none` |
+| `POST /repos/:id/onboarding` | `{ force?: boolean }` | Writes the narrative (cached in `repos/<id>/narrative.json` against the hash of its input) and returns the document. 409 without a provider |
+
+CLI: `spider report <repo> --narrative`.
+
 ### Ask Spider (C-24)
 
 `POST /repos/:id/ask` with `{ question: string, history?: { question, answer }[] (≤ 20) }` answers from the graph with a

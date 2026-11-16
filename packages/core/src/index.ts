@@ -36,3 +36,4 @@ export * from './llm/index.js';
 export { createMcpHandler, serveMcpStdio } from './mcp.js';
 export type { McpOptions } from './mcp.js';
 export { Bm25Index, buildBm25, hybridRank, searchText, tokenize } from './query/semantic.js';
+export { defaultTour } from './query/tour.js';

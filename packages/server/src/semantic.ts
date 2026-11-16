@@ -6,13 +6,16 @@ import {
   type QueryService,
   ask,
   configuredProvider,
+  defaultTour,
   generateSummaries,
   llmConfig,
   loadEmbeddings,
   nearest,
+  onboardingDoc,
   readSummaries,
   repoDir,
   spiderHome,
+  writeNarrative,
 } from '@spider/core';
 import {
   type LlmStatus,
@@ -72,6 +75,37 @@ export function registerSemanticRoutes(
     return withService(req.params.id, async (q, info) => {
       const r = await generateSummaries({ repoId: info.repoId, g: q.g, root: info.root, provider, home, ...body.data });
       return { generated: r.generated, reused: r.reused, failed: r.failed, summaries: r.summaries };
+    });
+  });
+
+  app.get<RepoReq>('/api/v1/repos/:id/tours/default', async (req) =>
+    withService(req.params.id, async (q, info) => defaultTour(q, info, await readSummaries(info.repoId, home))),
+  );
+
+  // "Architecture of X": the report, with the model-written narrative when one matches the current graph
+  app.get<RepoReq>('/api/v1/repos/:id/onboarding', async (req, reply) =>
+    withService(req.params.id, async (q, info) => {
+      const d = await onboardingDoc(q, info, await readSummaries(info.repoId, home), home);
+      return reply
+        .header('x-spider-narrative', d.narrative ? 'current' : d.stale ? 'stale' : 'none')
+        .type('text/markdown; charset=utf-8')
+        .send(d.markdown);
+    }),
+  );
+
+  app.post<RepoReq & { Body: { force?: boolean } | undefined }>('/api/v1/repos/:id/onboarding', async (req, reply) => {
+    const provider = configuredProvider(home);
+    if (!provider) return reply.code(409).send({ error: 'no model provider configured (set SPIDER_LLM_PROVIDER)' });
+    return withService(req.params.id, async (q, info) => {
+      const r = await writeNarrative({
+        q,
+        info,
+        summaries: await readSummaries(info.repoId, home),
+        provider,
+        home,
+        force: req.body?.force === true,
+      });
+      return reply.type('text/markdown; charset=utf-8').send(r.markdown);
     });
   });
 

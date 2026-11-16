@@ -1,5 +1,6 @@
 import type { ViewLevel } from '@spider/shared';
 import { type FlowQuery, VIEW_MODES, type ViewMode, type ViewSnapshot, useStore } from './store';
+import { useTour } from './tour';
 
 type UrlState = ViewSnapshot;
 
@@ -36,6 +37,11 @@ export function urlSearchFor(s: UrlState): string {
   if (s.view !== 'map') sp.set('view', s.view);
   const fq = s.flowQuery;
   if (fq) sp.set('flow', fq.type === 'path' ? `path~${fq.from}~${fq.to}` : `${fq.type}~${fq.id}~${fq.depth}`);
+  const t = useTour.getState();
+  if (t.tour) {
+    sp.set('tour', t.tour.id);
+    sp.set('step', String(t.step));
+  }
   return `?${sp.toString()}`;
 }
 
@@ -45,12 +51,20 @@ export function bindUrl(): () => void {
     .getState()
     .hydrate({ expanded: [], selected: undefined, view: 'map', flowQuery: undefined, ...readUrlState() });
   let last = '';
-  const unsub = useStore.subscribe((s) => {
+  const sync = () => {
+    const s = useStore.getState();
     if (!s.repoId) return;
+    // a shared tour link keeps its tour/step until the tour has loaded
+    if (!useTour.getState().tour && new URLSearchParams(window.location.search).has('tour')) return;
     const next = urlSearchFor(s);
     if (next === last) return;
     last = next;
     if (next !== window.location.search) window.history.replaceState(null, '', window.location.pathname + next);
-  });
-  return unsub;
+  };
+  const unsub = useStore.subscribe(sync);
+  const unsubTour = useTour.subscribe(sync);
+  return () => {
+    unsub();
+    unsubTour();
+  };
 }

@@ -17,6 +17,7 @@ import { DiffPanel } from './DiffPanel';
 import { FlowView } from './FlowView';
 import { FocusView } from './FocusView';
 import { MapView } from './MapView';
+import { TourPlayer } from './TourPlayer';
 
 // secondary views load on first use so the main bundle stays small
 const MatrixView = lazy(() => import('./MatrixView').then((m) => ({ default: m.MatrixView })));
@@ -99,6 +100,7 @@ export function Workspace({ repoId }: { repoId: string }) {
           </Suspense>
           <DiffPanel repoId={repoId} />
           <AskPanel repoId={repoId} />
+          <TourPlayer repoId={repoId} />
           {pathMode && (
             <output className="overlay mode-banner">
               <span>Path {pathMode.direction === 'from' ? 'from' : 'to'} selection: click another node.</span>

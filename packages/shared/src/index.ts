@@ -277,3 +277,18 @@ export interface LlmStatus {
   provider: 'anthropic' | 'openai' | 'ollama' | null;
   model?: string;
 }
+
+/** One stop of a guided tour (C-27): a map state plus narration. */
+export interface TourStep {
+  title: string;
+  text: string;
+  /** Node to reveal and select; none = the whole map. */
+  nodeId?: string;
+  level: ViewLevel;
+}
+
+export interface Tour {
+  id: string;
+  title: string;
+  steps: TourStep[];
+}

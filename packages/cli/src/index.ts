@@ -18,6 +18,7 @@ import {
   serveMcpStdio,
   toDot,
   toGraphML,
+  writeNarrative,
 } from '@spider/core';
 import type { ProgressEvent } from '@spider/core';
 import { startServer } from '@spider/server';
@@ -211,11 +212,23 @@ program
   .command('report')
   .argument('<repo>', 'repo id, name or source path')
   .option('-o, --out <file>', 'write to a file instead of stdout')
+  .option('-n, --narrative', 'add a model-written onboarding narrative (needs SPIDER_LLM_PROVIDER; cached)')
   .description('Write a Markdown architecture report')
-  .action(async (repo: string, opts: { out?: string }) => {
+  .action(async (repo: string, opts: { out?: string; narrative?: boolean }) => {
     const info = await resolveRepo(repo);
     const { graph, meta } = await loadRepo(info.repoId, home());
-    const md = markdownReport(new QueryService(graph, meta), info);
+    const q = new QueryService(graph, meta);
+    let md = markdownReport(q, info);
+    if (opts.narrative) {
+      const provider = configuredProvider(home());
+      if (!provider) {
+        console.error(pc.red('No model provider configured.'), 'Set SPIDER_LLM_PROVIDER=anthropic|openai|ollama.');
+        process.exitCode = 1;
+        return;
+      }
+      const summaries = await readSummaries(info.repoId, home());
+      md = (await writeNarrative({ q, info, summaries, provider, home: home() })).markdown;
+    }
     if (!opts.out) return void process.stdout.write(md);
     await fs.writeFile(opts.out, md);
     console.log(`${pc.green('✔')} Wrote the architecture report of ${info.name} to ${opts.out}`);

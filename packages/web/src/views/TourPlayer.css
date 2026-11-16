@@ -1,0 +1,31 @@
+/* Tour player (DESIGN_RULES §6 overlays): bottom left, above the status chip, clear of the minimap */
+.tour-player {
+  left: 12px;
+  bottom: 52px;
+  width: 360px;
+  max-width: calc(100% - 196px);
+  padding: 8px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: inset 0 0 0 1px var(--hairline), var(--shadow-1);
+}
+.tour-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tour-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.tour-text {
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.tour-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

@@ -21,6 +21,7 @@ import { EDITORS } from '../editor';
 import { download, exportTarget } from '../graph/exportImage';
 import { navigate } from '../router';
 import { type ViewMode, useStore } from '../store';
+import { useTour } from '../tour';
 import { IconButton, Segmented } from '../ui';
 
 const LEVELS: { value: ViewLevel; label: string; title: string }[] = [
@@ -200,6 +201,21 @@ function ViewSwitch() {
           >
             Ask Spider…
           </button>,
+          <button
+            key="tour"
+            type="button"
+            className="menu-item"
+            role="menuitem"
+            onClick={() => {
+              close();
+              useAsk.getState().setOpen(false);
+              useDiff.getState().setOpen(false);
+              const repoId = useStore.getState().repoId;
+              if (repoId) void api.tour(repoId).then((t) => useTour.getState().start(t));
+            }}
+          >
+            Take the tour
+          </button>,
         ]}
       </MenuButton>
     </div>
@@ -254,6 +270,16 @@ function ExportMenu({ repoId, name }: { repoId: string; name: string }) {
               onClick={close}
             >
               Architecture report (Markdown)
+            </a>
+            <a
+              className="menu-item"
+              role="menuitem"
+              href={api.onboardingUrl(repoId)}
+              target="_blank"
+              rel="noreferrer"
+              onClick={close}
+            >
+              Onboarding document
             </a>
             <a
               className="menu-item"

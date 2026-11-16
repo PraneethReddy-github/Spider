@@ -16,6 +16,7 @@ import type {
   SearchHit,
   SubGraph,
   SubsystemOverrides,
+  Tour,
   TraceResult,
 } from '@spider/shared';
 
@@ -141,6 +142,8 @@ export const api = {
   reportUrl: (id: string) => `${BASE}/repos/${enc(id)}/report?format=md`,
   overrides: (id: string) => request<Overrides>(`/repos/${enc(id)}/overrides`),
   llm: () => request<LlmStatus>('/llm'),
+  tour: (id: string) => request<Tour>(`/repos/${enc(id)}/tours/default`),
+  onboardingUrl: (id: string) => `${BASE}/repos/${enc(id)}/onboarding`,
   summaries: (id: string) => request<Record<string, NodeSummary>>(`/repos/${enc(id)}/summaries`),
   summarize: (id: string, body: { nodeIds?: string[]; force?: boolean }) =>
     request<{ generated: number; reused: number; failed: { nodeId: string; error: string }[] }>(
