@@ -21,7 +21,7 @@ import {
   writeNarrative,
 } from '@spider/core';
 import type { ProgressEvent } from '@spider/core';
-import { startServer } from '@spider/server';
+import { runWorker, startServer } from '@spider/server';
 import { Command } from 'commander';
 import pc from 'picocolors';
 
@@ -115,10 +115,33 @@ interface ServeOpts {
   watch?: boolean;
 }
 
+/** Hosted mode (S-4) settings from the environment; none set = local single-user mode. */
+function hostedEnv() {
+  const databaseUrl = process.env.SPIDER_DATABASE_URL;
+  if (!databaseUrl) return {};
+  return {
+    databaseUrl,
+    secret: process.env.SPIDER_SECRET,
+    signup: process.env.SPIDER_SIGNUP === 'open' ? ('open' as const) : ('invite' as const),
+    allowLocalSources: process.env.SPIDER_ALLOW_LOCAL_SOURCES === '1',
+  };
+}
+
 async function serve(opts: ServeOpts) {
-  const { url } = await startServer({ port: Number(opts.port), host: opts.host, home: home(), watch: opts.watch });
-  const repos = await listRepos(home());
+  const hosted = hostedEnv();
+  const { url } = await startServer({
+    port: Number(opts.port),
+    host: opts.host,
+    home: home(),
+    watch: opts.watch && !hosted.databaseUrl,
+    ...hosted,
+  });
   console.log(`${pc.bold('Spider')} is running at ${pc.cyan(url)}`);
+  if (hosted.databaseUrl) {
+    console.log(`  Hosted mode: accounts and jobs in Postgres; run ${pc.cyan('spider worker')} to process analyses.`);
+    return url;
+  }
+  const repos = await listRepos(home());
   console.log(
     repos.length
       ? `  ${num(repos.length)} analysed ${repos.length === 1 ? 'repository' : 'repositories'}: ${repos.map((r) => r.name).join(', ')}`
@@ -296,6 +319,22 @@ program
     console.log(
       `${pc.green('✔')} ${r.embedded} embedded, ${r.reused} unchanged (${r.total} nodes, ${provider.embedModel})`,
     );
+  });
+
+program
+  .command('worker')
+  .description('Hosted mode: process queued analyses from Postgres (SPIDER_DATABASE_URL); run as many as you like')
+  .action(async () => {
+    const url = process.env.SPIDER_DATABASE_URL;
+    if (!url) {
+      console.error(pc.red('SPIDER_DATABASE_URL is not set.'));
+      process.exitCode = 1;
+      return;
+    }
+    const ac = new AbortController();
+    for (const sig of ['SIGINT', 'SIGTERM'] as const) process.once(sig, () => ac.abort());
+    console.error(`${pc.bold('Spider worker')} waiting for jobs`);
+    await runWorker({ databaseUrl: url, home: home(), signal: ac.signal });
   });
 
 program

@@ -113,6 +113,7 @@ fixtures/         small repos with hand-verified expected graphs
   roadmap.
 - [`docs/API.md`](docs/API.md) — HTTP API reference.
 - [`docs/MCP.md`](docs/MCP.md) — `spider mcp`: the graph tools for MCP clients (Claude Code, Claude Desktop, Cursor).
+- [`docs/HOSTED.md`](docs/HOSTED.md) — hosted mode: accounts, workspaces, share links, workers, `docker compose up`.
 
 ## Roadmap
 

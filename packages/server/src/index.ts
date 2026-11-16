@@ -37,6 +37,8 @@ import {
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { registerArchitectureRoutes } from './architecture.js';
 import { registerDiffRoutes } from './diff.js';
+import { openDb } from './hosted/db.js';
+import { type Hosted, registerHosted } from './hosted/index.js';
 import { registerSemanticRoutes } from './semantic.js';
 import { type RepoWatcher, createRepoWatcher } from './watch.js';
 
@@ -49,6 +51,12 @@ export interface ServerOptions {
   logger?: boolean;
   /** Re-analyse registered local repos when their files change (`spider serve --watch`). */
   watch?: boolean;
+  /** Hosted mode (S-4): Postgres URL (`SPIDER_DATABASE_URL`). Unset = local single-user mode. */
+  databaseUrl?: string;
+  /** Hosted mode: HMAC key for share links and invites (`SPIDER_SECRET`, ≥ 32 chars). */
+  secret?: string;
+  signup?: 'open' | 'invite';
+  allowLocalSources?: boolean;
 }
 
 const jobs = new Map<string, JobProgress>();
@@ -113,11 +121,30 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   await app.register(websocket);
   const home = opts.home;
   let watcher: RepoWatcher | undefined;
+  let hosted: Hosted | undefined;
+  if (opts.databaseUrl) {
+    if (!opts.secret || opts.secret.length < 32)
+      throw new Error('hosted mode needs SPIDER_SECRET (at least 32 random characters)');
+    hosted = await registerHosted(app, {
+      db: await openDb(opts.databaseUrl),
+      databaseUrl: opts.databaseUrl,
+      secret: opts.secret,
+      signup: opts.signup ?? 'invite',
+      allowLocalSources: opts.allowLocalSources ?? false,
+    });
+    const h = hosted;
+    h.onRepoUpdated((repoId) => {
+      dropService(repoId);
+      const event: RepoEvent = { type: 'updated', repoId, analysedAt: new Date().toISOString() };
+      for (const listener of repoListeners.get(repoId) ?? []) listener(event);
+    });
+    app.addHook('onClose', async () => h.close());
+  }
 
   app.get('/api/v1/health', async () => ({ ok: true }));
 
   /* ---------- repos & jobs ---------- */
-  app.get('/api/v1/repos', async () => listRepos(home));
+  app.get('/api/v1/repos', async (req) => (hosted ? hosted.listRepos(req) : listRepos(home)));
 
   /** Starts an analysis job (on a worker thread, so this event loop keeps serving) and returns it. */
   const startJob = (source: string, ref?: string, name?: string) => {
@@ -159,6 +186,7 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   };
 
   app.post<{ Body: { source: string; ref?: string; name?: string } }>('/api/v1/repos', async (req, reply) => {
+    if (hosted) return hosted.enqueue(req, req.body ?? { source: '' });
     const { source, ref, name } = req.body ?? {};
     if (!source) return reply.code(400).send({ error: 'source is required' });
     const { job, done } = startJob(source, ref, name);
@@ -167,13 +195,33 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/jobs/:id', async (req, reply) => {
-    const job = jobs.get(req.params.id);
+    const job = hosted ? await hosted.job(req, req.params.id) : jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'job not found' });
     return job;
   });
 
   // Streams JobProgress JSON messages: the current state on connect, then every update; closes after done/failed.
   app.get<{ Params: { id: string } }>('/api/v1/jobs/:id/events', { websocket: true }, (socket, req) => {
+    if (hosted) {
+      // hosted jobs run in a worker process: follow the job row
+      const h = hosted;
+      let lastSent = '';
+      let timer: NodeJS.Timeout | undefined;
+      const tick = async () => {
+        const j = await h.job(req, req.params.id).catch(() => undefined);
+        if (!j) {
+          socket.send(JSON.stringify({ error: 'job not found' }));
+          return socket.close(4404, 'job not found');
+        }
+        const raw = JSON.stringify(j);
+        if (raw !== lastSent) socket.send((lastSent = raw));
+        if (isFinal(j)) return socket.close(1000, j.status);
+        timer = setTimeout(tick, 500);
+      };
+      void tick();
+      socket.on('close', () => clearTimeout(timer));
+      return;
+    }
     const job = jobs.get(req.params.id);
     if (!job) {
       socket.send(JSON.stringify({ error: 'job not found' }));
@@ -223,12 +271,14 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
     dropService(req.params.id);
     watcher?.remove(req.params.id);
     await deleteRepo(req.params.id, home);
+    await hosted?.removeRepo(req.params.id);
     return { ok: true };
   });
 
   app.post<{ Params: { id: string } }>('/api/v1/repos/:id/reanalyze', async (req, reply) => {
     const { info } = await getService(req.params.id, home).catch(() => ({ info: undefined }));
     if (!info) return reply.code(404).send({ error: 'repo not found' });
+    if (hosted) return hosted.reanalyze(req, req.params.id);
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/repos',
@@ -391,3 +441,4 @@ export async function startServer(opts: ServerOptions = {}): Promise<{ app: Fast
 }
 
 export { spiderHome };
+export { runWorker } from './hosted/worker.js';

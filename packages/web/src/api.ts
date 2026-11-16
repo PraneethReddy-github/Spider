@@ -20,6 +20,8 @@ import type {
   TraceResult,
 } from '@spider/shared';
 
+import { withAuth } from './auth';
+
 const BASE = '/api/v1';
 
 export class ApiError extends Error {
@@ -99,7 +101,7 @@ export type GraphRequest = ProjectionRequest & { focus?: string; focusDepth?: nu
 export const api = {
   repos: () => request<RepoInfo[]>('/repos'),
   repo: (id: string) => request<RepoInfo>(`/repos/${enc(id)}`),
-  analyze: (body: { source: string; ref?: string; name?: string }) =>
+  analyze: (body: { source: string; ref?: string; name?: string; orgId?: string }) =>
     request<{ jobId: string }>('/repos', { method: 'POST', body: JSON.stringify(body) }),
   reanalyze: (id: string) => request<{ jobId: string }>(`/repos/${enc(id)}/reanalyze`, { method: 'POST' }),
   job: (id: string) => request<JobProgress>(`/jobs/${enc(id)}`),
@@ -138,12 +140,17 @@ export const api = {
   diagnostics: (id: string) => request<AnyDiagnostic[]>(`/repos/${enc(id)}/diagnostics`),
   subsystems: (id: string) => request<SubsystemEntry[]>(`/repos/${enc(id)}/subsystems`),
   tree: (id: string, node = 'repo', depth = 1) => request<TreeNode[]>(`/repos/${enc(id)}/tree${qs({ node, depth })}`),
-  exportUrl: (id: string, format: 'json' | 'dot' | 'graphml') => `${BASE}/repos/${enc(id)}/export?format=${format}`,
-  reportUrl: (id: string) => `${BASE}/repos/${enc(id)}/report?format=md`,
+  exportUrl: (id: string, format: 'json' | 'dot' | 'graphml') =>
+    withAuth(`${BASE}/repos/${enc(id)}/export?format=${format}`),
+  reportUrl: (id: string) => withAuth(`${BASE}/repos/${enc(id)}/report?format=md`),
   overrides: (id: string) => request<Overrides>(`/repos/${enc(id)}/overrides`),
   llm: () => request<LlmStatus>('/llm'),
+  share: (id: string) =>
+    request<{ url: string; expiresAt: string }>(`/repos/${enc(id)}/share`, { method: 'POST', body: '{}' }),
+  invite: (orgId: string) =>
+    request<{ code: string; expiresAt: string }>(`/orgs/${enc(orgId)}/invites`, { method: 'POST', body: '{}' }),
   tour: (id: string) => request<Tour>(`/repos/${enc(id)}/tours/default`),
-  onboardingUrl: (id: string) => `${BASE}/repos/${enc(id)}/onboarding`,
+  onboardingUrl: (id: string) => withAuth(`${BASE}/repos/${enc(id)}/onboarding`),
   summaries: (id: string) => request<Record<string, NodeSummary>>(`/repos/${enc(id)}/summaries`),
   summarize: (id: string, body: { nodeIds?: string[]; force?: boolean }) =>
     request<{ generated: number; reused: number; failed: { nodeId: string; error: string }[] }>(
@@ -169,7 +176,7 @@ export function watchRepo(repoId: string, onUpdated: (analysedAt: string) => voi
   const open = (delay: number) => {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
     try {
-      ws = new WebSocket(`${proto}://${window.location.host}${BASE}/repos/${enc(repoId)}/events`);
+      ws = new WebSocket(withAuth(`${proto}://${window.location.host}${BASE}/repos/${enc(repoId)}/events`));
     } catch {
       return;
     }
@@ -228,7 +235,7 @@ export function watchJob(jobId: string, onUpdate: (p: JobProgress) => void): () 
 
   try {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${window.location.host}${BASE}/jobs/${enc(jobId)}/events`);
+    ws = new WebSocket(withAuth(`${proto}://${window.location.host}${BASE}/jobs/${enc(jobId)}/events`));
     let gotMessage = false;
     ws.onmessage = (ev) => {
       gotMessage = true;

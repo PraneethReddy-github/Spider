@@ -31,6 +31,8 @@ export interface AnalyzeOptions {
   /** Where Spider keeps repos, clones and caches. Defaults to ~/.spider */
   home?: string;
   name?: string;
+  /** Overrides the id derived from the source (hosted mode scopes ids per org). */
+  repoId?: string;
   onProgress?: (e: ProgressEvent) => void;
 }
 
@@ -84,7 +86,7 @@ export async function analyze(opts: AnalyzeOptions): Promise<RepoInfo> {
   }
   progress({ stage: 'ingest', current: 1, total: 1 });
 
-  const repoId = repoIdFor(source);
+  const repoId = opts.repoId ?? repoIdFor(source);
   const name = opts.name ?? path.basename(source.replace(/\.git$/, '').replace(/\/$/, ''));
 
   /* ---------- discover ---------- */

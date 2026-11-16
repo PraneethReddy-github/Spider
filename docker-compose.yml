@@ -1,0 +1,56 @@
+# Hosted Spider (S-4): Postgres + server + worker. Graphs live in the shared `data` volume.
+#   SPIDER_SECRET=$(openssl rand -base64 32) docker compose up --build
+# Then open http://localhost:4747 and create the first account; invite others from Settings.
+services:
+  db:
+    image: docker.io/library/postgres:17
+    environment:
+      POSTGRES_USER: spider
+      POSTGRES_PASSWORD: spider
+      POSTGRES_DB: spider
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spider"]
+      interval: 2s
+      retries: 30
+
+  server:
+    build: .
+    image: spider:latest
+    command: ["serve", "--host", "0.0.0.0", "--port", "4747"]
+    environment: &env
+      SPIDER_DATABASE_URL: postgres://spider:spider@db:5432/spider
+      SPIDER_SECRET: ${SPIDER_SECRET:?set SPIDER_SECRET to at least 32 random characters}
+      SPIDER_SIGNUP: ${SPIDER_SIGNUP:-invite}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SPIDER_LLM_PROVIDER: ${SPIDER_LLM_PROVIDER:-}
+      SPIDER_LLM_MODEL: ${SPIDER_LLM_MODEL:-}
+      SPIDER_LLM_BASE_URL: ${SPIDER_LLM_BASE_URL:-}
+      SPIDER_EMBED_MODEL: ${SPIDER_EMBED_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "4747:4747"
+    volumes:
+      - data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    image: spider:latest
+    command: ["worker"]
+    environment: *env
+    volumes:
+      - data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_started
+
+volumes:
+  pg:
+  data:

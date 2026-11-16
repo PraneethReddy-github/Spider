@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FolderGit2, GitBranch } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { api, watchJob } from '../api';
+import { useAuth } from '../auth';
 import { fmtDuration, fmtNum, fmtRelative, shortSource } from '../format';
 import { navigate } from '../router';
 import { EmptyState, Progress, Spinner } from '../ui';
@@ -11,6 +12,8 @@ export function Home() {
   const qc = useQueryClient();
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.repos });
   const [source, setSource] = useState('');
+  const orgs = useAuth((s) => s.me?.orgs ?? []);
+  const [orgId, setOrgId] = useState<string>();
   const [job, setJob] = useState<JobProgress>();
   const [error, setError] = useState<string>();
   const stopRef = useRef<() => void>();
@@ -51,7 +54,7 @@ export function Home() {
   useEffect(() => setRef(''), [debounced]);
 
   const analyse = useMutation({
-    mutationFn: (s: string) => api.analyze({ source: s, ref: remote && ref ? ref : undefined }),
+    mutationFn: (s: string) => api.analyze({ source: s, ref: remote && ref ? ref : undefined, orgId }),
     onMutate: () => {
       setError(undefined);
       setJob(undefined);
@@ -89,6 +92,21 @@ export function Home() {
               disabled={running}
             />
           </label>
+          {orgs.length > 1 && (
+            <select
+              className="select"
+              aria-label="Workspace"
+              value={orgId ?? orgs[0].id}
+              onChange={(e) => setOrgId(e.target.value)}
+              disabled={running}
+            >
+              {orgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          )}
           {remote && (
             <label className="ref-picker">
               <span className="sr-only">Ref</span>

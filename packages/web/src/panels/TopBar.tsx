@@ -16,6 +16,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useAsk } from '../ask';
+import { useAuth } from '../auth';
 import { useDiff } from '../diff';
 import { EDITORS } from '../editor';
 import { download, exportTarget } from '../graph/exportImage';
@@ -281,6 +282,7 @@ function ExportMenu({ repoId, name }: { repoId: string; name: string }) {
             >
               Onboarding document
             </a>
+            <ShareLinkItem repoId={repoId} close={close} />
             <a
               className="menu-item"
               role="menuitem"
@@ -323,6 +325,7 @@ function SettingsMenu() {
       {(close) => (
         <>
           <div className="menu-label t-caption">Open in editor</div>
+          <WorkspaceItems close={close} />
           {EDITORS.map((e) => (
             <button
               key={e.value}
@@ -393,5 +396,78 @@ function MenuButton({
         </div>
       )}
     </div>
+  );
+}
+
+const copy = async (text: string, what: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    useStore.getState().notify(`${what} copied to the clipboard.`);
+  } catch {
+    window.prompt(`Copy the ${what.toLowerCase()}:`, text);
+  }
+};
+
+/** Hosted mode: a signed, expiring read-only link to this repository (S-4). */
+function ShareLinkItem({ repoId, close }: { repoId: string; close: () => void }) {
+  const me = useAuth((s) => s.me);
+  if (!me) return null;
+  return (
+    <button
+      type="button"
+      className="menu-item"
+      role="menuitem"
+      onClick={() => {
+        close();
+        api
+          .share(repoId)
+          .then((r) => copy(`${window.location.origin}${r.url}`, 'Read-only link (7 days)'))
+          .catch((err) => useStore.getState().notify(String(err.message)));
+      }}
+    >
+      Copy read-only link
+    </button>
+  );
+}
+
+/** Hosted mode: who is signed in, invite to the workspace, sign out (S-4). */
+function WorkspaceItems({ close }: { close: () => void }) {
+  const me = useAuth((s) => s.me);
+  const signOut = useAuth((s) => s.signOut);
+  if (!me) return null;
+  const owned = me.orgs.filter((o) => o.role === 'owner');
+  return (
+    <>
+      <div className="menu-label t-caption ellipsis">{me.user.email}</div>
+      {owned.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          className="menu-item"
+          role="menuitem"
+          onClick={() => {
+            close();
+            api
+              .invite(o.id)
+              .then((r) => copy(`${window.location.origin}/?invite=${r.code}`, `Invite link to ${o.name}`))
+              .catch((err) => useStore.getState().notify(String(err.message)));
+          }}
+        >
+          Invite to {o.name}…
+        </button>
+      ))}
+      <button
+        type="button"
+        className="menu-item"
+        role="menuitem"
+        onClick={() => {
+          close();
+          void signOut();
+        }}
+      >
+        Sign out
+      </button>
+      <div className="menu-sep" />
+    </>
   );
 }
