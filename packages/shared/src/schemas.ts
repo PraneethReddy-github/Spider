@@ -108,6 +108,17 @@ export const summarizeBodySchema = z
   })
   .strict();
 
+/** `POST /repos/:id/ask` body (C-24). */
+export const askBodySchema = z
+  .object({
+    question: z.string().trim().min(1).max(4000),
+    history: z
+      .array(z.object({ question: z.string().max(4000), answer: z.string().max(20000) }).strict())
+      .max(20)
+      .default([]),
+  })
+  .strict();
+
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type TraversalQuery = z.infer<typeof traversalQuerySchema>;
 export type SearchQuery = z.infer<typeof searchQuerySchema>;

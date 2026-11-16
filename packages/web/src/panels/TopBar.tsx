@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { useAsk } from '../ask';
 import { useDiff } from '../diff';
 import { EDITORS } from '../editor';
 import { download, exportTarget } from '../graph/exportImage';
@@ -178,11 +179,26 @@ function ViewSwitch() {
             role="menuitem"
             onClick={() => {
               setView('map');
+              useAsk.getState().setOpen(false);
               useDiff.getState().setOpen(true);
               close();
             }}
           >
             Compare with a revision…
+          </button>,
+          <button
+            key="ask"
+            type="button"
+            className="menu-item"
+            role="menuitem"
+            onClick={() => {
+              setView('map');
+              useDiff.getState().setOpen(false);
+              useAsk.getState().setOpen(true);
+              close();
+            }}
+          >
+            Ask Spider…
           </button>,
         ]}
       </MenuButton>

@@ -147,5 +147,22 @@ the file.
 | `GET /repos/:id/summaries` | — | `Record<nodeId, NodeSummary>` `{ nodeId, text, hash, model, generatedAt }` (empty when none) |
 | `POST /repos/:id/summaries` | `{ nodeIds?: string[], limit?: number, force?: boolean }` | `{ generated, reused, failed: {nodeId, error}[], summaries }`. Default targets: every subsystem and package plus `limit` (40) hub files (PageRank) and classes (fan-in), tests excluded. Leaves first, then groups, whose prompt lists their members' summaries. A summary is reused while the hash of its input (prompt version, model, source excerpt, neighbours) is unchanged; `force` regenerates. 409 when no provider is configured. Runs synchronously. |
 
+### Ask Spider (C-24)
+
+`POST /repos/:id/ask` with `{ question: string, history?: { question, answer }[] (≤ 20) }` answers from the graph with a
+tool-using model loop (tools: `search`, `node_detail`, `upstream`, `downstream`, `path`, `endpoints`, `trace`,
+`subsystems`, `diagnostics`, `source`; read-only, `source` confined to the repo root, at most 12 model turns). The
+response is `text/event-stream`, one JSON object per `data:` line:
+
+| `event` | `data` |
+|---------|--------|
+| `text` | `{ type, delta }` — streamed text; text before a tool call is narration, clients reset on the next `tool` |
+| `tool` | `{ type, name, input }` |
+| `tool_result` | `{ type, name, nodeIds, isError? }` |
+| `done` | `{ type, answer, citations, seen, model }` — `answer` is Markdown citing nodes as `[label](node:<id>)`; `citations` keeps only ids that exist and appeared in a tool result |
+| `error` | `{ type, message }` |
+
+Closing the connection aborts the model loop. 400 on a bad body, 409 when no provider is configured.
+
 CLI: `spider summarize <repo> [--limit 40] [--node <ids...>] [--force]`. Summaries live in
 `SPIDER_HOME/repos/<id>/summaries.json`.

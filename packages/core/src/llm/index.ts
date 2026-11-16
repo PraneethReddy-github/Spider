@@ -5,3 +5,7 @@ export { llmConfig, createProvider, configuredProvider } from './config.js';
 export type { LlmConfig } from './config.js';
 export { generateSummaries, readSummaries, summaryTargets } from './summaries.js';
 export type { SummarizeOptions, SummarizeResult, SummaryMap } from './summaries.js';
+export { GRAPH_TOOLS, runGraphTool } from './tools.js';
+export type { ToolContext, ToolOutput } from './tools.js';
+export { ask } from './ask.js';
+export type { AskEvent, AskOptions, AskTurn } from './ask.js';

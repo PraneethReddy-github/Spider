@@ -12,6 +12,7 @@ import { useShortcuts } from '../shortcuts';
 import { useStore } from '../store';
 import { EmptyState, Spinner } from '../ui';
 import { bindUrl } from '../urlState';
+import { AskPanel } from './AskPanel';
 import { DiffPanel } from './DiffPanel';
 import { FlowView } from './FlowView';
 import { FocusView } from './FocusView';
@@ -97,6 +98,7 @@ export function Workspace({ repoId }: { repoId: string }) {
             {view === 'issues' && <IssuesView repoId={repoId} />}
           </Suspense>
           <DiffPanel repoId={repoId} />
+          <AskPanel repoId={repoId} />
           {pathMode && (
             <output className="overlay mode-banner">
               <span>Path {pathMode.direction === 'from' ? 'from' : 'to'} selection: click another node.</span>
