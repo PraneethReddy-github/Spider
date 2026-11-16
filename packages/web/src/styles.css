@@ -1,4 +1,4 @@
-/* Spider design system — DESIGN_RULES.md is the spec. Colours come only from theme.ts variables. */
+/* Spider design system. Colours come only from theme.ts variables. */
 
 /* ---------- 1. reset ---------- */
 *,
@@ -572,7 +572,7 @@ a:hover {
   background: var(--accent-soft);
   box-shadow: inset 2px 0 0 var(--accent);
 }
-/* 4-tone monochrome syntax (DESIGN_RULES §7): primary is inherited */
+/* 4-tone syntax colouring: primary is inherited */
 .tok-2 {
   color: var(--text-secondary);
 }
@@ -813,6 +813,12 @@ a:hover {
 .sigma-host {
   position: absolute;
   inset: 0;
+  /* a soft light in the middle of the canvas; the dot grid and regions draw on top */
+  background: radial-gradient(
+    ellipse 80% 70% at 50% 42%,
+    color-mix(in srgb, var(--bg-surface-2) 70%, var(--bg-canvas)) 0%,
+    var(--bg-canvas) 72%
+  );
 }
 .sigma-host canvas {
   outline: none;

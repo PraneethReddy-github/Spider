@@ -4,8 +4,8 @@ import { floatColor } from 'sigma/utils';
 
 /**
  * One node program for every kind: the fragment shader draws a signed-distance shape (circle,
- * square, rounded square, diamond, hexagon) with an optional inner ring. Kind is always doubled
- * with shape (DESIGN_RULES §4.4), so this is the only node program Spider needs.
+ * square, rounded square, diamond, hexagon) with an optional inner ring, soft shading and a halo.
+ * Kind is always doubled with shape, so this is the only node program Spider needs.
  *
  * Geometry: one triangle per node whose incircle has twice the node radius, so every shape fits.
  * Extra display-data attributes read here: `shape` (number), `ringColor` (hex), `ringWidth` (px).
@@ -64,6 +64,7 @@ varying float v_shape;
 varying float v_ring;
 
 uniform float u_correctionRatio;
+uniform float u_glow;
 
 float sdBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -95,17 +96,27 @@ void main(void) {
   #else
   float alpha = 1.0 - smoothstep(-px * 0.5, px * 0.5, d);
   vec4 c = v_color;
+  // soft light from the top-left and a slightly darker rim: depth without gradients on the palette
+  float light = clamp(0.5 + 0.35 * (p.y - p.x), 0.0, 1.0);
+  c.rgb = mix(c.rgb, vec3(1.0), 0.14 * light * u_glow);
+  c.rgb *= 1.0 - 0.16 * smoothstep(-0.22, 0.0, d) * u_glow;
   if (v_ring > 0.0) {
     float inner = smoothstep(-v_ring * px - px * 0.5, -v_ring * px + px * 0.5, d);
-    c = mix(v_color, v_ringColor, inner);
+    c = mix(c, v_ringColor, inner);
   }
-  gl_FragColor = c * alpha;
+  // halo outside the shape (premultiplied), fading over ~half a radius
+  float halo = u_glow * 0.22 * (1.0 - smoothstep(0.0, 0.6, d)) * step(0.0, d);
+  vec3 glowColor = v_ring > 1.5 ? v_ringColor.rgb : v_color.rgb;
+  gl_FragColor = vec4(c.rgb * alpha + glowColor * halo * (1.0 - alpha), alpha + halo * (1.0 - alpha));
   #endif
 }
 `;
 
 const { UNSIGNED_BYTE, FLOAT } = WebGLRenderingContext;
-const UNIFORMS = ['u_sizeRatio', 'u_correctionRatio', 'u_matrix'] as const;
+const UNIFORMS = ['u_sizeRatio', 'u_correctionRatio', 'u_matrix', 'u_glow'] as const;
+
+/** Node effects (halo, shading); GraphCanvas turns them off on big maps, where they cost fill rate. */
+export const nodeFx = { glow: 1 };
 
 export class NodeShapeProgram extends NodeProgram<(typeof UNIFORMS)[number]> {
   getDefinition() {
@@ -147,5 +158,6 @@ export class NodeShapeProgram extends NodeProgram<(typeof UNIFORMS)[number]> {
     gl.uniform1f(uniformLocations.u_correctionRatio, params.correctionRatio);
     gl.uniform1f(uniformLocations.u_sizeRatio, params.sizeRatio);
     gl.uniformMatrix3fv(uniformLocations.u_matrix, false, params.matrix);
+    gl.uniform1f(uniformLocations.u_glow, nodeFx.glow);
   }
 }

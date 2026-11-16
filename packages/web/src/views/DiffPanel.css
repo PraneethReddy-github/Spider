@@ -1,4 +1,4 @@
-/* Compare overlay (DESIGN_RULES §6 overlays, §4.3 semantic colours as small marks only) */
+/* Compare overlay; semantic colours only as small marks */
 .diff-panel {
   top: 12px;
   right: 12px;

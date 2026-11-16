@@ -94,7 +94,30 @@ export function MapView({ repoId }: { repoId: string }) {
       const origin = (parent && prev.get(parent)) || target.get(id) || { x: 0, y: 0 };
       return { ...a, x: origin.x, y: origin.y };
     });
-    cancelAnim.current = animatePositions(graph, target, prev.size ? 300 : 0);
+    // motion: an intro that ripples out from the centre on first draw, then new nodes pop in where their
+    // container was and everything else glides; big maps skip it (layout already costs a frame budget)
+    const small = enc.nodes.length <= 3000;
+    const fresh = new Set(enc.nodes.filter((n) => !prev.has(n.id)).map((n) => n.id));
+    let stagger: Map<string, number> | undefined;
+    if (!prev.size && small) {
+      let cx = 0;
+      let cy = 0;
+      for (const p of target.values()) {
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= target.size || 1;
+      cy /= target.size || 1;
+      let far = 1;
+      for (const p of target.values()) far = Math.max(far, Math.hypot(p.x - cx, p.y - cy));
+      stagger = new Map();
+      for (const [id, p] of target) stagger.set(id, (Math.hypot(p.x - cx, p.y - cy) / far) * 420);
+      graph.updateEachNodeAttributes((_id, a) => ({ ...a, x: cx, y: cy }));
+    }
+    cancelAnim.current = animatePositions(graph, target, !small ? 0 : prev.size ? 520 : 680, {
+      grow: small ? fresh : undefined,
+      stagger,
+    });
 
     const key = `${repoId}:${s.level}:${JSON.stringify(s.filters)}:${s.hidden.length}`;
     if (key !== fitKey.current) {

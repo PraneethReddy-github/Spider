@@ -2,7 +2,7 @@ import type { HighlighterCore, LanguageRegistration, ThemeRegistration } from 's
 
 /**
  * Lazy Shiki tokenizer for the Source panel. Shiki, the JS regex engine and each grammar are separate
- * chunks fetched on first use. Tokens come back as one of four tones (DESIGN_RULES §7), which CSS
+ * chunks fetched on first use. Tokens come back as one of four tones, which CSS
  * maps to theme tokens, so both themes work without re-highlighting.
  */
 export type Tone = 1 | 2 | 3 | 4; // primary, secondary, tertiary, accent-text

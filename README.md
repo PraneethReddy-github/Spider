@@ -149,9 +149,6 @@ scripts/          benchmarks, synthetic repo generator, hosted smoke test, Ask e
 
 Further reading:
 
-- [`design.md`](design.md): product and architecture design.
-- [`DESIGN_RULES.md`](DESIGN_RULES.md): the visual design system.
-- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): current state, measurements, known gaps and roadmap.
 - [`docs/API.md`](docs/API.md): HTTP API reference.
 - [`docs/MCP.md`](docs/MCP.md): the MCP server.
 - [`docs/HOSTED.md`](docs/HOSTED.md): hosted mode.

@@ -40,9 +40,8 @@ spider worker            # as many as you like, on any host that mounts SPIDER_H
   progress on the job row, and `NOTIFY` the servers, which drop their cached graph. A job whose worker stopped
   sending heartbeats for 2 minutes is claimed again.
 - **Graphs** stay in per-repository SQLite files, written by the worker and read by the servers. Repository ids are
-  scoped per org, so two orgs analysing the same repository get separate graphs. *(design.md §9.3 sketched graphs in
-  Postgres. Keeping SQLite reuses every query, FTS and stored-view path; the cost is a shared volume between server
-  and workers.)*
+  scoped per org, so two orgs analysing the same repository get separate graphs. Keeping graphs in SQLite reuses every query, search and
+  stored-view path; the cost is a volume shared by server and workers.
 
 ## Access rules
 

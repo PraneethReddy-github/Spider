@@ -10,7 +10,7 @@ import { type ThemeName, blend, graphPalette, tokens } from '../theme';
 import { KindBadge } from '../ui';
 import { drawHover, drawLabel, drawTheme } from './draw';
 import { type ExportSource, exportTarget, sigmaPng, sigmaSvg } from './exportImage';
-import { NodeShapeProgram } from './program';
+import { NodeShapeProgram, nodeFx } from './program';
 
 export interface GraphCanvasProps {
   /** Stable graphology instance; views mutate it in place and sigma follows. */
@@ -192,6 +192,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
   /* ----- theme ----- */
   useEffect(() => {
     drawTheme.name = p.theme;
+    if (nodeFx.glow) nodeFx.glow = graphPalette[p.theme].glow;
     sigma?.refresh();
   }, [p.theme, sigma]);
 
@@ -235,27 +236,41 @@ export function GraphCanvas(p: GraphCanvasProps) {
       }
       const theme = props.current.theme;
       const sel = props.current.selected;
-      ctx.fillStyle = graphPalette[theme].region;
-      ctx.strokeStyle = tokens[theme].hairlineStrong;
+      const pal = graphPalette[theme];
+      drawGrid(ctx, sigma, width, height, pal.grid);
+      ctx.fillStyle = pal.region;
+      ctx.strokeStyle = pal.regionRing;
       ctx.lineWidth = 1;
       // one path per nesting depth (translucent fills still darken inward) instead of one per region
       const rects = viewportRects(sigma, boxes, width, height);
+      const fancy = rects.length <= 120;
       let selRect: Rect | undefined;
       for (let i = 0; i < rects.length; ) {
         const depth = rects[i].depth;
+        ctx.save();
+        if (fancy && depth === 0) {
+          ctx.shadowColor = theme === 'dark' ? 'rgba(0,0,0,0.45)' : 'rgba(15,23,42,0.10)';
+          ctx.shadowBlur = 24;
+          ctx.shadowOffsetY = 6;
+        }
         ctx.beginPath();
         for (; i < rects.length && rects[i].depth === depth; i++) {
           const r = rects[i];
           if (r.id === sel) selRect = r;
-          ctx.roundRect(r.x, r.y, r.w, r.h, 14);
+          ctx.roundRect(r.x, r.y, r.w, r.h, 16);
         }
         ctx.fill();
+        ctx.restore();
         ctx.stroke();
       }
+      if (rects.length <= 400)
+        for (const r of rects)
+          if (graph.hasNode(r.id)) drawRegionTitle(ctx, r, String(graph.getNodeAttribute(r.id, 'title') ?? ''), theme);
       if (selRect) {
         ctx.beginPath();
-        ctx.roundRect(selRect.x, selRect.y, selRect.w, selRect.h, 14);
+        ctx.roundRect(selRect.x, selRect.y, selRect.w, selRect.h, 16);
         ctx.strokeStyle = tokens[theme].accent;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       }
     };
@@ -273,6 +288,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
   useEffect(() => {
     if (!sigma) return;
     const big = sigma.getGraph().order > LOD_NODES || sigma.getGraph().size > LOD_EDGES;
+    nodeFx.glow = big ? 0 : graphPalette[props.current.theme].glow;
     sigma.setSetting('hideEdgesOnMove', big);
     sigma.setSetting('hideLabelsOnMove', big);
     // node sizes are screen pixels: dense maps need a deeper zoom before neighbours separate
@@ -354,6 +370,54 @@ export function GraphCanvas(p: GraphCanvasProps) {
       return out;
     });
   }, [sigma, selected, secondary, hovered, theme, graph, p.groups]);
+
+  /* ----- selection ripple: two accent rings expand from a newly selected node ----- */
+  useEffect(() => {
+    const id = p.selected;
+    if (!sigma || !id || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const canvas = sigma.createCanvas('spider-ripple', { afterLayer: 'nodes' });
+    const ctx = canvas.getContext('2d');
+    const start = performance.now();
+    const DURATION = 1100;
+    let raf = 0;
+    const frame = (now: number) => {
+      const { width, height } = sigma.getDimensions();
+      const dpr = window.devicePixelRatio || 1;
+      if (canvas.width !== Math.round(width * dpr)) {
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+      }
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const d = sigma.getGraph().hasNode(id) ? sigma.getNodeDisplayData(id) : undefined;
+      const elapsed = now - start;
+      if (d && !d.hidden) {
+        const c = sigma.framedGraphToViewport(d);
+        const r = sigma.scaleSize(d.size);
+        ctx.strokeStyle = tokens[props.current.theme].accent;
+        for (const lag of [0, 260]) {
+          const t = Math.min(1, Math.max(0, (elapsed - lag) / (DURATION - 260)));
+          if (t <= 0 || t >= 1) continue;
+          ctx.globalAlpha = 0.55 * (1 - t) ** 2;
+          ctx.lineWidth = 2 * (1 - t) + 0.5;
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, r + 4 + 30 * (1 - (1 - t) ** 3), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (elapsed < DURATION) raf = requestAnimationFrame(frame);
+      else ctx.clearRect(0, 0, width, height);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(raf);
+      canvas.remove();
+    };
+  }, [sigma, p.selected]);
 
   /* ----- camera ----- */
   const lastLayout = useRef(-1);
@@ -538,4 +602,43 @@ function hitGroup(sigma: Sigma, groups: Map<string, string[]> | undefined, x: nu
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r.id;
   }
   return undefined;
+}
+
+/* ---------- canvas decoration ---------- */
+
+/** Dot grid that pans and zooms with the camera; spacing folds back into 18–36 px so density stays even. */
+function drawGrid(ctx: CanvasRenderingContext2D, sigma: Sigma, width: number, height: number, color: string): void {
+  const a = sigma.graphToViewport({ x: 0, y: 0 });
+  const b = sigma.graphToViewport({ x: 1, y: 0 });
+  let step = Math.abs(b.x - a.x) * 0.02 || 24;
+  while (step < 18) step *= 2;
+  while (step > 36) step /= 2;
+  const ox = ((a.x % step) + step) % step;
+  const oy = ((a.y % step) + step) % step;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let x = ox; x < width; x += step) for (let y = oy; y < height; y += step) ctx.rect(x - 0.75, y - 0.75, 1.5, 1.5);
+  ctx.fill();
+}
+
+/** Container name as a small pill on the region's top edge. */
+function drawRegionTitle(ctx: CanvasRenderingContext2D, r: Rect, label: string, theme: ThemeName): void {
+  if (!label || r.w < 90 || r.h < 48) return;
+  const t = tokens[theme];
+  ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Inter Variable", "Inter", sans-serif';
+  const max = r.w - 40;
+  let text = label;
+  while (text.length > 3 && ctx.measureText(text).width > max) text = `${text.slice(0, -2)}…`;
+  const w = ctx.measureText(text).width + 16;
+  const x = r.x + 12;
+  const y = r.y - 10;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, 20, 10);
+  ctx.fillStyle = t.bgSurface2;
+  ctx.fill();
+  ctx.strokeStyle = t.hairlineStrong;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = t.textSecondary;
+  ctx.fillText(text, x + 8, y + 14);
 }

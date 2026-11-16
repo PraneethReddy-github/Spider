@@ -1,7 +1,7 @@
 import type { EdgeKind, GraphNode, NodeKind } from '@spider/shared';
 
 /**
- * Design tokens — single source of truth (DESIGN_RULES.md §4, §13).
+ * Design tokens: the single source of truth.
  * CSS variables are generated from this object by `applyTheme`; the WebGL renderer reads the
  * graph palette directly. No component may hard-code a colour.
  */
@@ -55,61 +55,78 @@ export const tokens = {
 export type ThemeName = keyof typeof tokens;
 export type Tokens = (typeof tokens)[ThemeName];
 
-/** Graph encoding (DESIGN_RULES §4.4). Light theme keeps the order of prominence, inverted in luminance. */
+/**
+ * Graph encoding: each kind has its own muted hue (shape doubles kind, so colour is a second cue, not the only
+ * one). Light theme uses deeper variants of the same hues. Edges take their source node's hue (encode.ts).
+ */
 export const graphPalette = {
   dark: {
     node: {
-      container: '#2A2A2F',
-      containerRing: '#8A8A92',
-      file: '#C9C9CF',
-      class: '#E5E5EA',
-      function: '#9A9AA2',
-      method: '#7C7C84',
-      variable: '#5A5A62',
-      type: '#5A5A62',
-      external: '#3A3A40',
-      externalRing: '#6E6E73',
-      datastore: '#48484F',
+      container: '#1D2433',
+      containerRing: '#55657F',
+      file: '#3FC1B0',
+      class: '#A78BFA',
+      function: '#60A5FA',
+      method: '#8EC5FC',
+      variable: '#8B93A7',
+      type: '#F0A6CA',
+      endpoint: '#F5B544',
+      external: '#323A4B',
+      externalRing: '#7C869C',
+      datastore: '#F97066',
     },
-    edge: {
-      imports: 'rgba(255,255,255,0.22)',
-      calls: 'rgba(255,255,255,0.34)',
-      instantiates: 'rgba(255,255,255,0.34)',
-      extends: 'rgba(255,255,255,0.34)',
-      implements: 'rgba(255,255,255,0.34)',
-      depends_on: 'rgba(255,255,255,0.14)',
-      references: 'rgba(255,255,255,0.12)',
-    } as Partial<Record<EdgeKind, string>>,
-    region: 'rgba(27,27,30,0.55)',
+    edgeAlpha: {
+      imports: 0.32,
+      calls: 0.5,
+      instantiates: 0.5,
+      extends: 0.55,
+      implements: 0.55,
+      exposes: 0.65,
+      reads: 0.55,
+      writes: 0.55,
+      depends_on: 0.22,
+      references: 0.22,
+    } as Partial<Record<EdgeKind, number>>,
+    region: 'rgba(29,36,51,0.42)',
+    regionRing: 'rgba(124,134,156,0.28)',
+    grid: 'rgba(148,163,184,0.10)',
+    glow: 1,
   },
   light: {
     node: {
-      container: '#EDEDF0',
-      containerRing: '#8A8A92',
-      file: '#76767C',
-      class: '#48484D',
-      function: '#8E8E95',
-      method: '#A1A1A8',
-      variable: '#BDBDC3',
-      type: '#BDBDC3',
-      external: '#E2E2E6',
-      externalRing: '#A1A1A6',
-      datastore: '#C7C7CC',
+      container: '#E6EBF4',
+      containerRing: '#94A3B8',
+      file: '#0E9F8E',
+      class: '#7C5CE0',
+      function: '#2F7FD9',
+      method: '#5B9BE0',
+      variable: '#7A8394',
+      type: '#D9659F',
+      endpoint: '#D98E04',
+      external: '#E3E7EF',
+      externalRing: '#94A3B8',
+      datastore: '#E0574C',
     },
-    edge: {
-      imports: 'rgba(0,0,0,0.22)',
-      calls: 'rgba(0,0,0,0.34)',
-      instantiates: 'rgba(0,0,0,0.34)',
-      extends: 'rgba(0,0,0,0.34)',
-      implements: 'rgba(0,0,0,0.34)',
-      depends_on: 'rgba(0,0,0,0.14)',
-      references: 'rgba(0,0,0,0.12)',
-    } as Partial<Record<EdgeKind, string>>,
-    region: 'rgba(242,242,244,0.55)',
+    edgeAlpha: {
+      imports: 0.3,
+      calls: 0.45,
+      instantiates: 0.45,
+      extends: 0.5,
+      implements: 0.5,
+      exposes: 0.6,
+      reads: 0.5,
+      writes: 0.5,
+      depends_on: 0.2,
+      references: 0.2,
+    } as Partial<Record<EdgeKind, number>>,
+    region: 'rgba(230,235,244,0.55)',
+    regionRing: 'rgba(100,116,139,0.22)',
+    grid: 'rgba(100,116,139,0.16)',
+    glow: 0.6,
   },
-  subsystems: ['#6E8FB3', '#7FA38B', '#B39A6E', '#A97F8D', '#7E9FA6', '#9C8F72', '#8E7FA9', '#7B9C7B'],
-  dim: 0.18,
-  hoverDim: 0.35,
+  subsystems: ['#5AA9E6', '#3FC1B0', '#F5B544', '#A78BFA', '#F97066', '#7BD389', '#F0A6CA', '#C9A66B'],
+  dim: 0.14,
+  hoverDim: 0.3,
 } as const;
 
 export const space = [0, 4, 8, 12, 16, 24, 32, 48, 64] as const;
@@ -212,7 +229,7 @@ export function nodeLook(kind: NodeKind, theme: ThemeName): NodeLook {
     case 'type':
       return { shape: SHAPE.square, fill: p.type, ringWidth: 0 };
     case 'endpoint':
-      return { shape: SHAPE.diamond, fill: tokens[theme].accent, ringWidth: 0 };
+      return { shape: SHAPE.diamond, fill: p.endpoint, ringWidth: 0 };
     case 'external':
       return { shape: SHAPE.hexagon, fill: p.external, ring: p.externalRing, ringWidth: 1 };
     case 'datastore':
@@ -225,10 +242,11 @@ export function classKindOf(n: GraphNode): string | undefined {
   return n.kind === 'class' ? ((n.props.classKind as string | undefined) ?? 'class') : undefined;
 }
 
-export function edgeColorOf(kind: EdgeKind, theme: ThemeName): string {
-  if (kind === 'exposes') return blend(tokens[theme].accent, 0.7, tokens[theme].bgCanvas);
-  const c = graphPalette[theme].edge[kind] ?? graphPalette[theme].edge.imports ?? '#888888';
-  return blend(c, 1, tokens[theme].bgCanvas);
+/** Edge colour: the source node's hue at the kind's strength (legend: `source` = a neutral grey). */
+export function edgeColorOf(kind: EdgeKind, theme: ThemeName, source?: string): string {
+  const pal = graphPalette[theme];
+  const hue = kind === 'exposes' ? pal.node.endpoint : (source ?? tokens[theme].textSecondary);
+  return blend(hue, pal.edgeAlpha[kind] ?? pal.edgeAlpha.imports ?? 0.3, tokens[theme].bgCanvas);
 }
 
 /** Aggregated edge width = 1 + log2(weight), max 6 px. */
@@ -238,7 +256,7 @@ export function edgeWidth(weight: number): number {
 
 const clampSize = (v: number) => Math.max(4, Math.min(26, v));
 
-/** Node radius 4–26 px on a log scale of the level's size metric (DESIGN_RULES §8). */
+/** Node radius 4–26 px on a log scale of the level's size metric. */
 export function nodeSize(n: GraphNode): number {
   const childCount = Number(n.props.childCount ?? 0);
   const deg = (n.metrics?.fanIn ?? 0) + (n.metrics?.fanOut ?? 0);

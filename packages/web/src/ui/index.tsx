@@ -38,7 +38,13 @@ export function ShapeGlyph({
 }
 
 export function KindGlyph({ kind, size }: { kind: NodeKind; size?: number }) {
-  return <ShapeGlyph shape={nodeLook(kind, 'dark').shape} size={size} />;
+  const look = nodeLook(kind, 'dark');
+  // containers and externals are quiet outlines; everything else wears its map colour
+  return look.ring ? (
+    <ShapeGlyph shape={look.shape} size={size} stroke={look.ring} />
+  ) : (
+    <ShapeGlyph shape={look.shape} size={size} fill={look.fill} />
+  );
 }
 
 export function KindBadge({ kind }: { kind: NodeKind }) {

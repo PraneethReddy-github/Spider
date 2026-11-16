@@ -1,7 +1,7 @@
 import type { GraphNode } from '@spider/shared';
 import type { DiagnosticType } from './api';
 
-/** Thin-space thousands separators (DESIGN_RULES §10): 12 408. */
+/** Thin-space thousands separators: 12 408. */
 export function fmtNum(n: number | undefined | null): string {
   if (n === undefined || n === null || Number.isNaN(n)) return '–';
   const [int, frac] = (Number.isInteger(n) ? String(n) : n.toFixed(2)).split('.');

@@ -11,7 +11,7 @@ function typing(target: EventTarget | null): boolean {
 }
 
 /**
- * Workspace keyboard registry (IMPLEMENTATION_PLAN §6.3): F / Shift+F fit, Esc, U, D, P, H / Shift+H,
+ * Workspace keyboard registry: F / Shift+F fit, Esc, U, D, P, H / Shift+H,
  * 1–4 levels, ⌘K and / for search.
  */
 export function useShortcuts(): void {

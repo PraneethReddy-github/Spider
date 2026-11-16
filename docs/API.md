@@ -82,7 +82,7 @@ only of tests carry `props.isTest` (hidden unless `includeTests`).
 (weight, over ≥ 2 file pairs) as B depends on A → each B → A dependency is reported as upward. Nested
 directories are never compared.
 
-Planned (see `IMPLEMENTATION_PLAN.md`): `POST /repos/:id/ask` (Phase 5).
+`POST /repos/:id/ask` is described under *Semantic layer* below.
 
 ## Repo events & watch mode
 

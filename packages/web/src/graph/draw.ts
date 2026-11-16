@@ -19,19 +19,37 @@ function labelColor(tone: Data['labelTone']): string {
   return tone === 'secondary' ? t.textSecondary : tone === 'accent' ? t.accentText : t.textPrimary;
 }
 
-/** 12 px label right of the node, legible through a canvas-coloured stroke instead of a pill. */
+/**
+ * 12 px label right of the node. Containers and endpoints get a pill (they anchor the map); everything else is
+ * legible through a canvas-coloured stroke, which stays light on dense maps.
+ */
 export function drawLabel(ctx: CanvasRenderingContext2D, data: Data, _settings: Settings): void {
   if (!data.label) return;
-  ctx.font = `500 12px ${FONT}`;
-  let x = data.x + data.size * 1.15 + 4;
+  const pill = data.labelTone === 'primary' || data.labelTone === 'accent';
+  ctx.font = `${pill ? 600 : 500} 12px ${FONT}`;
+  const w = ctx.measureText(data.label).width;
+  let x = data.x + data.size * 1.15 + (pill ? 10 : 4);
   let y = data.y + 4;
   if (data.labelBelow) {
-    x = data.x - ctx.measureText(data.label).width / 2;
+    x = data.x - w / 2;
     y = data.y + data.size * 1.2 + 14;
+  }
+  const t = tokens[drawTheme.name];
+  if (pill) {
+    ctx.beginPath();
+    ctx.roundRect(x - 7, y - 13, w + 14, 19, 9.5);
+    ctx.fillStyle = t.bgSurface2;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = t.hairlineStrong;
+    ctx.stroke();
+    ctx.fillStyle = labelColor(data.labelTone);
+    ctx.fillText(data.label, x, y);
+    return;
   }
   ctx.lineJoin = 'round';
   ctx.lineWidth = 3;
-  ctx.strokeStyle = tokens[drawTheme.name].bgCanvas;
+  ctx.strokeStyle = t.bgCanvas;
   ctx.strokeText(data.label, x, y);
   ctx.fillStyle = labelColor(data.labelTone);
   ctx.fillText(data.label, x, y);
@@ -64,11 +82,15 @@ export function shapePath(ctx: CanvasRenderingContext2D, x: number, y: number, r
   }
 }
 
-/** Hover: 1.5 px primary ring around the node plus its label (tooltip lives in the DOM). */
+/** Hover: a soft glow in the node's colour, a 1.5 px ring, and its label (the tooltip lives in the DOM). */
 export function drawHover(ctx: CanvasRenderingContext2D, data: Data, settings: Settings): void {
   shapePath(ctx, data.x, data.y, data.size + 2.5, data.shape ?? SHAPE.circle);
+  ctx.save();
+  ctx.shadowColor = data.color;
+  ctx.shadowBlur = 16;
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = tokens[drawTheme.name].textPrimary;
   ctx.stroke();
+  ctx.restore();
   drawLabel(ctx, data, settings);
 }

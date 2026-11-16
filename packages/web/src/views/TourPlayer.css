@@ -1,4 +1,4 @@
-/* Tour player (DESIGN_RULES §6 overlays): bottom left, above the status chip, clear of the minimap */
+/* Tour player: bottom left, above the status chip, clear of the minimap */
 .tour-player {
   left: 12px;
   bottom: 52px;

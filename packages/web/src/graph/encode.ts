@@ -52,7 +52,7 @@ export function dropTests<T extends SubGraph>(sg: T, keep?: string): { sg: T; dr
 }
 
 /**
- * Replaces the graph's content with `sg`, applying the visual encoding (DESIGN_RULES §4.4, §8).
+ * Replaces the graph's content with `sg`, applying the visual encoding.
  * Existing x/y are kept for nodes that survive so views can animate from them.
  */
 export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOptions): Encoded {
@@ -108,7 +108,9 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
     graph.addNode(n.id, {
       x: p?.x ?? 0,
       y: p?.y ?? 0,
-      label: nodeLabel(n),
+      // an expanded container is named by its region's title pill (GraphCanvas), not a floating label
+      label: isGroup ? null : nodeLabel(n),
+      title: nodeLabel(n),
       fullLabel: n.qname ?? nodeLabel(n),
       kind: n.kind,
       size: isGroup ? 7 : sizeOf(n),
@@ -139,7 +141,7 @@ export function encodeGraph(graph: Graph, sg: SubGraph | undefined, o: EncodeOpt
     if (graph.hasEdge(e.id)) continue;
     edges.push(e);
     const onPath = o.pathEdges?.has(e.id);
-    const base = edgeColorOf(e.kind, o.theme);
+    const base = edgeColorOf(e.kind, o.theme, String(graph.getNodeAttribute(e.src, 'color')));
     const diffTone = e.props.diff === 'added' ? t.ok : e.props.diff === 'removed' ? t.danger : undefined;
     graph.addEdgeWithKey(e.id, e.src, e.dst, {
       kind: e.kind,
@@ -180,35 +182,64 @@ function metricSizer(nodes: GraphNode[], sizeBy: SizeBy | undefined): (n: GraphN
   };
 }
 
-/** Animates node positions to `target` over `ms` (ease-out). Returns a cancel function. */
-export function animatePositions(graph: Graph, target: Map<string, { x: number; y: number }>, ms: number): () => void {
+/** Ease-out with a small overshoot: moves settle like a spring instead of stopping dead. */
+const easeOutBack = (t: number, k = 1.2) => 1 + (k + 1) * (t - 1) ** 3 + k * (t - 1) ** 2;
+
+export interface AnimateOptions {
+  /** Nodes that appear: they grow from nothing to their size. */
+  grow?: Set<string>;
+  /** Per-node start delay in ms (intro ripple from the centre). */
+  stagger?: Map<string, number>;
+}
+
+/** Animates node positions to `target` over `ms` per node (spring ease-out). Returns a cancel function. */
+export function animatePositions(
+  graph: Graph,
+  target: Map<string, { x: number; y: number }>,
+  ms: number,
+  o: AnimateOptions = {},
+): () => void {
   const from = new Map<string, { x: number; y: number }>();
   graph.forEachNode((id, a) => from.set(id, { x: a.x, y: a.y }));
+  const sizes = new Map<string, number>();
+  for (const id of o.grow ?? []) if (graph.hasNode(id)) sizes.set(id, Number(graph.getNodeAttribute(id, 'size')));
   const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const apply = (k: number) => {
+  const apply = (elapsed: number) => {
     graph.updateEachNodeAttributes(
       (id, a) => {
         const to = target.get(id);
         const f = from.get(id);
-        if (!to || !f) return a;
-        a.x = f.x + (to.x - f.x) * k;
-        a.y = f.y + (to.y - f.y) * k;
+        const delay = o.stagger?.get(id) ?? 0;
+        const t = ms <= 0 ? 1 : Math.min(1, Math.max(0, (elapsed - delay) / ms));
+        if (to && f) {
+          const k = t >= 1 ? 1 : easeOutBack(t, 0.9);
+          a.x = f.x + (to.x - f.x) * k;
+          a.y = f.y + (to.y - f.y) * k;
+        }
+        const size = sizes.get(id);
+        if (size !== undefined) a.size = Math.max(0.01, size * (t >= 1 ? 1 : easeOutBack(t, 1.6)));
         return a;
       },
-      { attributes: ['x', 'y'] },
+      { attributes: sizes.size ? ['x', 'y', 'size'] : ['x', 'y'] },
     );
   };
+  let longest = ms;
+  for (const d of o.stagger?.values() ?? []) longest = Math.max(longest, d + ms);
   if (reduced || ms <= 0) {
-    apply(1);
+    apply(Number.POSITIVE_INFINITY);
     return () => {};
   }
+  apply(0);
   const start = performance.now();
   let raf = 0;
   const tick = (now: number) => {
-    const t = Math.min(1, (now - start) / ms);
-    apply(1 - (1 - t) ** 3);
-    if (t < 1) raf = requestAnimationFrame(tick);
+    const elapsed = now - start;
+    apply(elapsed);
+    if (elapsed < longest) raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
-  return () => cancelAnimationFrame(raf);
+  return () => {
+    cancelAnimationFrame(raf);
+    apply(Number.POSITIVE_INFINITY);
+  };
 }
