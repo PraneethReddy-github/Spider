@@ -4,10 +4,12 @@ import type {
   ExternalUsage,
   GraphNode,
   JobProgress,
+  LlmStatus,
   MatrixCell,
   MatrixResult,
   NodeDetail,
   NodeHistory,
+  NodeSummary,
   ProjectionRequest,
   RemoteRefs,
   RepoInfo,
@@ -138,6 +140,13 @@ export const api = {
   exportUrl: (id: string, format: 'json' | 'dot' | 'graphml') => `${BASE}/repos/${enc(id)}/export?format=${format}`,
   reportUrl: (id: string) => `${BASE}/repos/${enc(id)}/report?format=md`,
   overrides: (id: string) => request<Overrides>(`/repos/${enc(id)}/overrides`),
+  llm: () => request<LlmStatus>('/llm'),
+  summaries: (id: string) => request<Record<string, NodeSummary>>(`/repos/${enc(id)}/summaries`),
+  summarize: (id: string, body: { nodeIds?: string[]; force?: boolean }) =>
+    request<{ generated: number; reused: number; failed: { nodeId: string; error: string }[] }>(
+      `/repos/${enc(id)}/summaries`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   saveOverrides: (id: string, body: Overrides) =>
     request<{ ok: true }>(`/repos/${enc(id)}/overrides`, { method: 'PUT', body: JSON.stringify(body) }),
   history: (id: string, nodeId: string) => request<NodeHistory>(`/repos/${enc(id)}/nodes/${enc(nodeId)}/history`),

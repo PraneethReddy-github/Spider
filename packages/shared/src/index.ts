@@ -260,3 +260,20 @@ export interface RemoteRefs {
 
 export * from './schemas.js';
 export * from './diff.js';
+
+/* ---------- semantic layer (Phase 5) ---------- */
+
+/** A model-written summary of a node (C-23), cached by the hash of its input. */
+export interface NodeSummary {
+  nodeId: string;
+  text: string;
+  hash: string;
+  model: string;
+  generatedAt: string;
+}
+
+/** `GET /llm` — the configured provider, or `{ provider: null }` when model features are off. */
+export interface LlmStatus {
+  provider: 'anthropic' | 'openai' | 'ollama' | null;
+  model?: string;
+}

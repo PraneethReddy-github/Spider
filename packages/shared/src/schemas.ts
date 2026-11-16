@@ -99,6 +99,15 @@ export const subsystemOverridesSchema = z
   })
   .strict();
 
+/** `POST /repos/:id/summaries` body (C-23). */
+export const summarizeBodySchema = z
+  .object({
+    nodeIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    force: z.boolean().optional(),
+  })
+  .strict();
+
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type TraversalQuery = z.infer<typeof traversalQuerySchema>;
 export type SearchQuery = z.infer<typeof searchQuerySchema>;

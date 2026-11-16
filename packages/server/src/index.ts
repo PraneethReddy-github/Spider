@@ -37,6 +37,7 @@ import {
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { registerArchitectureRoutes } from './architecture.js';
 import { registerDiffRoutes } from './diff.js';
+import { registerSemanticRoutes } from './semantic.js';
 import { type RepoWatcher, createRepoWatcher } from './watch.js';
 
 export interface ServerOptions {
@@ -346,6 +347,8 @@ export async function createServer(opts: ServerOptions = {}): Promise<FastifyIns
   });
 
   registerDiffRoutes(app, { home, repoInfo: async (id) => (await getService(id, home)).info });
+
+  registerSemanticRoutes(app, { home, withService });
 
   registerArchitectureRoutes(app, {
     home,

@@ -1002,6 +1002,15 @@ a:hover {
   display: block;
   margin-bottom: 8px;
 }
+.details-section .section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.summary-model {
+  margin-top: 8px;
+}
 .props {
   display: grid;
   grid-template-columns: max-content 1fr;

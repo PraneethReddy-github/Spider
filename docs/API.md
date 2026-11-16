@@ -127,3 +127,25 @@ threads), so the API stays responsive while analysing (fastify: `GET /health` ma
 The Markdown summary (`--format md`, the default) is sized for a PR comment: counts table, new/resolved
 cycles and layer violations, then the first 25 added/removed symbols and new/dropped dependencies.
 `docs/examples/spider-diff.yml` is an example GitHub workflow that posts it with `gh pr comment`.
+
+## Semantic layer (Phase 5)
+
+Model-backed features are **opt-in**. Nothing is sent to a model unless a provider is configured, by env or by
+`SPIDER_HOME/config.json` (`{ "llm": { "provider", "model", "baseUrl" } }`; env wins). API keys are never read from
+the file.
+
+| Env | Meaning |
+|-----|---------|
+| `SPIDER_LLM_PROVIDER` | `anthropic` (Claude, default model `claude-opus-5-5`), `openai` (any OpenAI-compatible `/chat/completions`, default base `https://api.openai.com/v1`), `ollama` (base `http://127.0.0.1:11434/v1`), `none` |
+| `SPIDER_LLM_MODEL` | model id (required for `openai`/`ollama`) |
+| `SPIDER_LLM_BASE_URL` | endpoint override |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | credentials (Anthropic also accepts `ANTHROPIC_AUTH_TOKEN` or an `ant auth login` profile) |
+
+| Route | Body / query | Response |
+|-------|--------------|----------|
+| `GET /llm` | — | `LlmStatus` `{ provider: 'anthropic'\|'openai'\|'ollama'\|null, model? }` |
+| `GET /repos/:id/summaries` | — | `Record<nodeId, NodeSummary>` `{ nodeId, text, hash, model, generatedAt }` (empty when none) |
+| `POST /repos/:id/summaries` | `{ nodeIds?: string[], limit?: number, force?: boolean }` | `{ generated, reused, failed: {nodeId, error}[], summaries }`. Default targets: every subsystem and package plus `limit` (40) hub files (PageRank) and classes (fan-in), tests excluded. Leaves first, then groups, whose prompt lists their members' summaries. A summary is reused while the hash of its input (prompt version, model, source excerpt, neighbours) is unchanged; `force` regenerates. 409 when no provider is configured. Runs synchronously. |
+
+CLI: `spider summarize <repo> [--limit 40] [--node <ids...>] [--force]`. Summaries live in
+`SPIDER_HOME/repos/<id>/summaries.json`.

@@ -4,8 +4,10 @@ import { promises as fs } from 'node:fs';
 import {
   QueryService,
   analyze,
+  configuredProvider,
   diffMarkdown,
   diffRevisions,
+  generateSummaries,
   listRepos,
   loadRepo,
   markdownReport,
@@ -214,6 +216,39 @@ program
     if (!opts.out) return void process.stdout.write(md);
     await fs.writeFile(opts.out, md);
     console.log(`${pc.green('✔')} Wrote the architecture report of ${info.name} to ${opts.out}`);
+  });
+
+program
+  .command('summarize')
+  .argument('<repo>', 'repo id, name or source path')
+  .option('-l, --limit <n>', 'hub files and classes to summarise (plus every package and subsystem)', '40')
+  .option('-n, --node <ids...>', 'summarise only these node ids')
+  .option('-f, --force', 'regenerate summaries whose input did not change')
+  .description('Write model summaries of subsystems, packages and hubs (needs SPIDER_LLM_PROVIDER)')
+  .action(async (repo: string, opts: { limit: string; node?: string[]; force?: boolean }) => {
+    const provider = configuredProvider(home());
+    if (!provider) {
+      console.error(pc.red('No model provider configured.'), 'Set SPIDER_LLM_PROVIDER=anthropic|openai|ollama.');
+      process.exitCode = 1;
+      return;
+    }
+    const info = await resolveRepo(repo);
+    const { graph } = await loadRepo(info.repoId, home());
+    console.log(pc.dim(`Summarising ${info.name} with ${provider.name}/${provider.model}…`));
+    const r = await generateSummaries({
+      repoId: info.repoId,
+      g: graph,
+      root: info.root,
+      provider,
+      home: home(),
+      nodeIds: opts.node,
+      limit: Number(opts.limit),
+      force: opts.force,
+      onProgress: (done, total, n) => process.stderr.write(pc.dim(`  ${done}/${total} ${n.qname ?? n.name}\n`)),
+    });
+    console.log(`${pc.green('✔')} ${r.generated} written, ${r.reused} unchanged, ${r.failed.length} failed`);
+    for (const f of r.failed) console.log(pc.red(`  ${graph.getNode(f.nodeId)?.qname ?? f.nodeId}: ${f.error}`));
+    if (r.failed.length) process.exitCode = 1;
   });
 
 program

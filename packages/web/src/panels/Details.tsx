@@ -1,5 +1,5 @@
 import type { EdgeKind, GraphEdge, GraphNode, NodeDetail } from '@spider/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, SquareArrowOutUpRight } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { actions } from '../actions';
@@ -121,6 +121,7 @@ function Overview({ repoId, d }: { repoId: string; d: NodeDetail }) {
           )}
         </div>
       </section>
+      <Summary repoId={repoId} node={n} />
       <section className="details-section">
         <div className="actions">
           <button type="button" className="btn btn-secondary" onClick={() => actions.upstream(n.id)} title="U">
@@ -175,6 +176,41 @@ function Overview({ repoId, d }: { repoId: string; d: NodeDetail }) {
 }
 
 const keepView = () => useStore.getState().view;
+
+const SUMMARY_KINDS = new Set(['file', 'class', 'module', 'function', 'package', 'subsystem']);
+
+/** Model-written summary (C-23): shown when one exists; "Summarize" only when a provider is configured. */
+function Summary({ repoId, node }: { repoId: string; node: GraphNode }) {
+  const qc = useQueryClient();
+  const llm = useQuery({ queryKey: ['llm'], queryFn: api.llm, staleTime: 5 * 60_000 });
+  const sums = useQuery({ queryKey: ['summaries', repoId], queryFn: () => api.summaries(repoId), staleTime: 60_000 });
+  const run = useMutation({
+    mutationFn: () => api.summarize(repoId, { nodeIds: [node.id], force: !!sums.data?.[node.id] }),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ['summaries', repoId] });
+      if (r.failed.length) throw new Error(r.failed[0].error);
+    },
+  });
+  const s = sums.data?.[node.id];
+  const canRun = !!llm.data?.provider && SUMMARY_KINDS.has(node.kind);
+  if (!s && !canRun) return null;
+  return (
+    <section className="details-section">
+      <div className="section-head">
+        <span className="t-caption">Summary</span>
+        {canRun && (
+          <button type="button" className="btn btn-ghost" disabled={run.isPending} onClick={() => run.mutate()}>
+            {run.isPending ? 'Writing…' : s ? 'Regenerate' : 'Summarize'}
+          </button>
+        )}
+      </div>
+      {s ? <p>{s.text}</p> : !run.isPending && <p className="tone-3">No summary yet.</p>}
+      {run.isPending && <Spinner label="Writing summary" />}
+      {run.isError && <p className="tone-3">{String((run.error as Error).message)}</p>}
+      {s && <p className="t-caption tone-3 summary-model">{s.model}</p>}
+    </section>
+  );
+}
 
 function Metric({ label, value, text }: { label: string; value?: number; text?: string }) {
   return (

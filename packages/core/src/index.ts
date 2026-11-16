@@ -32,3 +32,4 @@ export {
   resolveCommit,
 } from './diff/index.js';
 export type { BuiltGraph, DiffOptions } from './diff/index.js';
+export * from './llm/index.js';
