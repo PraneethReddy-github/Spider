@@ -1,0 +1,32 @@
+{
+  "name": "spider-desktop",
+  "productName": "Spider",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Spider \u2014 see how your codebase is connected.",
+  "author": "Spider",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/PraneethReddy-github/Spider",
+  "type": "module",
+  "main": "./dist/main.js",
+  "files": [
+    "dist",
+    "resources"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "pnpm -w build && tsc -p tsconfig.json && electron .",
+    "dist:linux": "node scripts/package.mjs --linux",
+    "dist:win": "node scripts/package.mjs --win"
+  },
+  "dependencies": {
+    "@spider/core": "workspace:*",
+    "@spider/server": "workspace:*",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8"
+  }
+}

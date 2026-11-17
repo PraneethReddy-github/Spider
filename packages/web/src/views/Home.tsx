@@ -12,6 +12,7 @@ export function Home() {
   const qc = useQueryClient();
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.repos });
   const [source, setSource] = useState('');
+  const desktop = (window as { spiderDesktop?: { pickFolder(): Promise<string | undefined> } }).spiderDesktop;
   const orgs = useAuth((s) => s.me?.orgs ?? []);
   const [orgId, setOrgId] = useState<string>();
   const [job, setJob] = useState<JobProgress>();
@@ -92,6 +93,20 @@ export function Home() {
               disabled={running}
             />
           </label>
+          {desktop && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-lg"
+              disabled={running}
+              onClick={() =>
+                void desktop.pickFolder().then((dir) => {
+                  if (dir) setSource(dir);
+                })
+              }
+            >
+              Browse…
+            </button>
+          )}
           {orgs.length > 1 && (
             <select
               className="select"

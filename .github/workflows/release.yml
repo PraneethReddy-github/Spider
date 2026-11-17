@@ -1,0 +1,96 @@
+name: Release
+run-name: ${{ github.ref_name }}
+
+# Push a tag like v0.6.0 to build the Windows and Linux apps and publish them as a GitHub Release.
+# Installed apps (Windows installer, Linux AppImage) find the release through latest*.yml and update themselves.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build · Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # node-gyp (native rebuilds for Electron) still imports distutils, gone from Python 3.12+
+      - run: pip install setuptools
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter spider-desktop run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            packages/desktop/release/win/*.exe
+            packages/desktop/release/win/*.blockmap
+            packages/desktop/release/win/latest.yml
+          retention-days: 1
+          if-no-files-found: error
+
+  build-linux:
+    name: Build · Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: sudo apt-get update -y && sudo apt-get install -y rpm libarchive-tools
+      - run: pnpm install --frozen-lockfile
+      - name: Build Linux
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter spider-desktop run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            packages/desktop/release/linux/*.AppImage
+            packages/desktop/release/linux/*.deb
+            packages/desktop/release/linux/latest-linux.yml
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-artifacts
+          path: release-assets/
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: release-assets/
+      - run: ls -lh release-assets/
+      - name: Version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Spider ${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: RELEASE_NOTES.md
+          files: release-assets/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

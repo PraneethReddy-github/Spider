@@ -1,0 +1,48 @@
+name: Build Test
+
+# Manual: build the desktop apps without releasing (artifacts kept 7 days).
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for this test build (optional)'
+        required: false
+        default: 'manual test'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-2022, script: 'dist:win', out: win }
+          - { name: Linux, os: ubuntu-latest, script: 'dist:linux', out: linux }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: runner.os == 'Windows'
+        run: pip install setuptools
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -y && sudo apt-get install -y rpm libarchive-tools
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter spider-desktop run ${{ matrix.script }}
+        env:
+          GH_TOKEN: ''
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-${{ matrix.out }}
+          path: |
+            packages/desktop/release/${{ matrix.out }}/*.exe
+            packages/desktop/release/${{ matrix.out }}/*.AppImage
+            packages/desktop/release/${{ matrix.out }}/*.deb
+          retention-days: 7
+          if-no-files-found: error

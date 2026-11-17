@@ -43,7 +43,18 @@ repository.
 | ![Flow](docs/screenshots/flow.png) | ![Matrix](docs/screenshots/matrix.png) |
 | ![Endpoints](docs/screenshots/endpoints.png) | ![Light theme](docs/screenshots/light.png) |
 
-## Quick start
+## Download
+
+Get the desktop app for **Windows** or **Linux** from the
+[latest release](https://github.com/PraneethReddy-github/Spider/releases/latest). It needs no Node or setup:
+
+- **Windows:** `Spider-Setup-<version>.exe` (or `Spider-Portable-<version>.exe` without installing)
+- **Linux:** `Spider-<version>-x86_64.AppImage` (`chmod +x` it, then run it), or the `.deb` for Debian/Ubuntu
+
+The installer and AppImage update themselves from GitHub Releases. Install `git` to analyse GitHub URLs; local
+folders work without it.
+
+## Quick start (from source)
 
 Requires Node 20+ and pnpm 9.
 
@@ -128,6 +139,10 @@ PR comment.
 
 ## Development
 
+Desktop app: `pnpm --filter spider-desktop start` runs it from source; `pnpm --filter spider-desktop run dist:linux`
+(or `dist:win` on Windows) builds installers into `packages/desktop/release/`. Pushing a `v*.*.*` tag builds both
+platforms in GitHub Actions and publishes the release that installed apps update from.
+
 ```bash
 pnpm dev         # API on :4747 and Vite on :5173 (proxying /api)
 pnpm typecheck
@@ -143,6 +158,7 @@ packages/server   Fastify HTTP API, WebSocket progress, hosted mode, static web 
 packages/cli      the spider command
 packages/web      React + Sigma web app
 packages/vscode   VS Code extension
+packages/desktop  Electron desktop app (Windows, Linux) with auto-update
 fixtures/         small repos with hand-verified expected graphs
 scripts/          benchmarks, synthetic repo generator, hosted smoke test, Ask evaluation
 ```
