@@ -199,6 +199,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
   /* ----- regions layer (expanded containers) ----- */
   useEffect(() => {
     if (!sigma) return;
+    dropLayer(sigma, 'spider-regions');
     const canvas = sigma.createCanvas('spider-regions', { beforeLayer: 'edges' });
     const ctx = canvas.getContext('2d');
     const graph = sigma.getGraph();
@@ -279,7 +280,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
     return () => {
       sigma.off('afterRender', draw);
       for (const ev of events) graph.off(ev, dirty);
-      canvas.remove();
+      dropLayer(sigma, 'spider-regions');
     };
   }, [sigma]);
 
@@ -375,6 +376,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
   useEffect(() => {
     const id = p.selected;
     if (!sigma || !id || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    dropLayer(sigma, 'spider-ripple');
     const canvas = sigma.createCanvas('spider-ripple', { afterLayer: 'nodes' });
     const ctx = canvas.getContext('2d');
     const start = performance.now();
@@ -415,7 +417,7 @@ export function GraphCanvas(p: GraphCanvasProps) {
     raf = requestAnimationFrame(frame);
     return () => {
       cancelAnimationFrame(raf);
-      canvas.remove();
+      dropLayer(sigma, 'spider-ripple');
     };
   }, [sigma, p.selected]);
 
@@ -641,4 +643,13 @@ function drawRegionTitle(ctx: CanvasRenderingContext2D, r: Rect, label: string, 
   ctx.stroke();
   ctx.fillStyle = t.textSecondary;
   ctx.fillText(text, x + 8, y + 14);
+}
+
+/** Unregisters a custom canvas layer (removing only its element leaves the name taken in sigma). */
+function dropLayer(sigma: Sigma, id: string): void {
+  try {
+    sigma.killLayer(id);
+  } catch {
+    // not created yet, or sigma already killed
+  }
 }

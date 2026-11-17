@@ -89,6 +89,16 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
   }
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error(error, info.componentStack);
+    // recover quietly: reload once; only a second failure within 15 s shows the message
+    try {
+      const last = Number(sessionStorage.getItem('spider.autoReload') ?? 0);
+      if (Date.now() - last > 15_000) {
+        sessionStorage.setItem('spider.autoReload', String(Date.now()));
+        window.location.reload();
+      }
+    } catch {
+      /* storage blocked: show the message */
+    }
   }
   render() {
     if (!this.state.error) return this.props.children;
